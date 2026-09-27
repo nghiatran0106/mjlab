@@ -15,6 +15,7 @@ from mjlab.entity import Entity
 from mjlab.envs import mdp as envs_mdp
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.tasks.velocity import mdp as velocity_mdp
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
 if TYPE_CHECKING:
@@ -50,11 +51,16 @@ def key_body_pos_b(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.T
   return quat_apply_inverse(quat, rel_w).reshape(rel_w.shape[0], -1)
 
 
-def amp_observation_group(key_bodies: bool = False) -> ObservationGroupCfg:
+def amp_observation_group(
+  key_bodies: bool = False, feet: bool = False, history: int = 0
+) -> ObservationGroupCfg:
   """Noise-free proprioceptive state used by the discriminator.
 
   With ``key_bodies``, feet and hand positions are appended so the
-  discriminator can judge foot placement and arm posture directly.
+  discriminator can judge foot placement and arm posture directly. With
+  ``feet``, foot clearance and contact flags are appended. ``history`` stacks
+  the last ``history`` frames so the discriminator sees part of a gait cycle
+  (a single 20 ms step cannot tell short fast steps from long ones).
   """
   group = ObservationGroupCfg(
     terms={
@@ -73,4 +79,13 @@ def amp_observation_group(key_bodies: bool = False) -> ObservationGroupCfg:
       func=key_body_pos_b,
       params={"asset_cfg": SceneEntityCfg("robot", body_names=G1_KEY_BODIES)},
     )
+  if feet:
+    group.terms["foot_height"] = ObservationTermCfg(
+      func=velocity_mdp.foot_height, params={"sensor_name": "foot_height_scan"}
+    )
+    group.terms["foot_contact"] = ObservationTermCfg(
+      func=velocity_mdp.foot_contact, params={"sensor_name": "feet_ground_contact"}
+    )
+  if history > 0:
+    group.history_length = history
   return group

@@ -4,6 +4,11 @@ import numpy as np
 import pytest
 import torch
 
+from mjlab.tasks.velocity_amp.config.g1.env_cfgs import (
+  GAIT_HISTORY,
+  unitree_g1_flat_expert_gait_env_cfg,
+)
+from mjlab.tasks.velocity_amp.mdp import amp_observation_group
 from mjlab.tasks.velocity_amp.rl.discriminator import Discriminator, ExpertBuffer
 
 
@@ -42,3 +47,22 @@ def test_expert_buffer_roundtrip(tmp_path):
   assert len(buf) == 100 and buf.obs_dim == 5
   bs, bsn = buf.sample(32)
   assert torch.allclose(bsn - bs, torch.ones_like(bs))
+
+
+def test_gait_features_add_feet_and_history():
+  base = amp_observation_group()
+  gait = amp_observation_group(key_bodies=True, feet=True, history=GAIT_HISTORY)
+  assert set(gait.terms) - set(base.terms) == {
+    "key_body_pos",
+    "foot_height",
+    "foot_contact",
+  }
+  assert gait.history_length == GAIT_HISTORY
+  assert base.history_length is None
+
+
+def test_stepping_expert_rewards_air_time_with_fixed_commands():
+  cfg = unitree_g1_flat_expert_gait_env_cfg()
+  assert cfg.rewards["air_time"].weight > 0
+  assert cfg.rewards["foot_swing_height"].weight < -0.25
+  assert "command_vel" not in cfg.curriculum

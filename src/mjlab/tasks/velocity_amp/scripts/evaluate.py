@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from mjlab.tasks.velocity import mdp as velocity_mdp
 from mjlab.tasks.velocity_amp.scripts.common import (
   default_device,
   load_policy,
@@ -31,6 +32,7 @@ _QUANTILES = torch.linspace(0.0, 1.0, 101)
 
 
 DOWN_HEIGHT = 0.5  # m; G1 pelvis stands at ~0.75 m.
+MOVING_SPEED = 0.2  # m/s; gait statistics only while asked to walk.
 
 
 def feature_gap(policy_feats: torch.Tensor, expert_feats: torch.Tensor) -> float:
@@ -61,6 +63,11 @@ def evaluate(checkpoint: str, args: argparse.Namespace, expert: torch.Tensor) ->
   # near the ground: the tilt-based fall check misses a robot that crawls.
   progress = commanded = 0.0
   down = 0.0
+  # Gait: touchdowns, swing peak height and air time, for moving commands only.
+  prev_contact = None
+  prev_air = peak = torch.zeros(0)
+  touchdowns = moving_foot_steps = 0
+  lift_sum = air_sum = 0.0
   feats = []
 
   obs = wrapped.get_observations()
@@ -77,6 +84,21 @@ def evaluate(checkpoint: str, args: argparse.Namespace, expert: torch.Tensor) ->
       progress += (v_xy * cmd[:, :2]).sum(dim=1).sum()
       commanded += cmd[:, :2].square().sum(dim=1).sum()
       down += (robot.data.root_link_pos_w[:, 2] < DOWN_HEIGHT).float().mean()
+      contact = velocity_mdp.foot_contact(env, "feet_ground_contact") > 0.5
+      height = velocity_mdp.foot_height(env, "foot_height_scan")
+      air = velocity_mdp.foot_air_time(env, "feet_ground_contact")
+      moving = (cmd[:, :2].norm(dim=1) > MOVING_SPEED)[:, None].expand_as(contact)
+      if prev_contact is None:
+        peak = torch.zeros_like(height)
+      else:
+        peak = torch.maximum(peak, torch.where(contact, 0.0, height))
+        td = contact & ~prev_contact & moving & (dones == 0)[:, None]
+        touchdowns += int(td.sum())
+        lift_sum += float(peak[td].sum())
+        air_sum += float(prev_air[td].sum())
+        peak = torch.where(contact, 0.0, peak)
+      moving_foot_steps += int(moving.sum())
+      prev_contact, prev_air = contact, air.clone()
       time_outs = extras.get("time_outs", torch.zeros_like(dones))
       falls += int(((dones == 1) & ~time_outs.bool()).sum())
       feats.append(obs["amp"][dones == 0].clone())
@@ -94,6 +116,10 @@ def evaluate(checkpoint: str, args: argparse.Namespace, expert: torch.Tensor) ->
     # 1.0 = moves exactly at the commanded speed, 0.0 = stands still.
     "speed_ratio": float(progress) / max(float(commanded), 1e-6),
     "down_fraction": float(down) / args.steps,
+    # Per foot, while the command is moving.
+    "touchdowns_per_s": touchdowns / max(moving_foot_steps * env.step_dt, 1e-6),
+    "swing_peak_cm": 100.0 * lift_sum / max(touchdowns, 1),
+    "air_time_s": air_sum / max(touchdowns, 1),
     "expert_feature_gap": feature_gap(subsample(torch.cat(feats)), expert),
   }
 
@@ -123,8 +149,8 @@ def main() -> None:
 
   header = (
     "| policy | true reward/s | lin err (m/s) | yaw err (rad/s) "
-    "| falls/min | speed ratio | down | expert gap |\n"
-    "|---|---|---|---|---|---|---|---|"
+    "| falls/min | speed ratio | down | expert gap | steps/s/foot | lift cm "
+    "| air s |\n|---|---|---|---|---|---|---|---|---|---|---|"
   )
   print(header)
   for name, r in results.items():
@@ -132,7 +158,8 @@ def main() -> None:
       f"| {name} | {r['true_reward_rate']:.3f} | {r['lin_vel_error_m_s']:.3f} "
       f"| {r['yaw_vel_error_rad_s']:.3f} | {r['falls_per_minute']:.2f} "
       f"| {r['speed_ratio']:.2f} | {r['down_fraction']:.2f} "
-      f"| {r['expert_feature_gap']:.3f} |"
+      f"| {r['expert_feature_gap']:.3f} | {r['touchdowns_per_s']:.2f} "
+      f"| {r['swing_peak_cm']:.1f} | {r['air_time_s']:.3f} |"
     )
   print(f"[INFO] -> {args.out}")
 

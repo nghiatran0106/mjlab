@@ -20,11 +20,15 @@ def _use_training_command_ranges(cfg: ManagerBasedRlEnvCfg) -> None:
   twist_cmd.ranges.ang_vel_z = (-0.5, 0.5)
 
 
+# Discriminator window for the gait variant: 12 frames = 0.24 s.
+GAIT_HISTORY = 12
+
+
 def unitree_g1_flat_amp_env_cfg(
-  play: bool = False, key_bodies: bool = False
+  play: bool = False, key_bodies: bool = False, gait: bool = False
 ) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_flat_env_cfg(play=play)
-  cfg.observations["amp"] = amp_observation_group(key_bodies)
+  cfg.observations["amp"] = _amp_group(key_bodies, gait)
   cfg.rewards = {k: v for k, v in cfg.rewards.items() if k in TASK_REWARD_TERMS}
   if play:
     _use_training_command_ranges(cfg)
@@ -32,11 +36,32 @@ def unitree_g1_flat_amp_env_cfg(
 
 
 def unitree_g1_flat_expert_env_cfg(
-  play: bool = False, key_bodies: bool = False
+  play: bool = False, key_bodies: bool = False, gait: bool = False
 ) -> ManagerBasedRlEnvCfg:
   """Original hand-shaped reward plus AMP features (expert data, evaluation)."""
   cfg = unitree_g1_flat_env_cfg(play=play)
-  cfg.observations["amp"] = amp_observation_group(key_bodies)
+  cfg.observations["amp"] = _amp_group(key_bodies, gait)
   if play:
     _use_training_command_ranges(cfg)
   return cfg
+
+
+def unitree_g1_flat_expert_gait_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Expert with a clearer stepping gait, as a better demonstration source.
+
+  The stock G1 config disables the air-time reward, and the 1000-iteration
+  expert lifts its feet only 2-5 cm (target 10 cm) with short steps. Reward
+  air time and penalize low swing height harder; keep the command range fixed
+  so the demonstrations match the AMP training distribution.
+  """
+  cfg = unitree_g1_flat_expert_env_cfg(play=play, key_bodies=True, gait=True)
+  cfg.rewards["air_time"].weight = 0.5
+  cfg.rewards["foot_swing_height"].weight = -1.0
+  cfg.curriculum.pop("command_vel", None)
+  return cfg
+
+
+def _amp_group(key_bodies: bool, gait: bool):
+  if gait:
+    return amp_observation_group(key_bodies=True, feet=True, history=GAIT_HISTORY)
+  return amp_observation_group(key_bodies)
