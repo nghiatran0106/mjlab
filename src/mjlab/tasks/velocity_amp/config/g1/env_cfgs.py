@@ -20,15 +20,20 @@ def _use_training_command_ranges(cfg: ManagerBasedRlEnvCfg) -> None:
   twist_cmd.ranges.ang_vel_z = (-0.5, 0.5)
 
 
-# Discriminator window for the gait variant: 12 frames = 0.24 s.
+# Discriminator window for the gait variant: 12 frames = 0.24 s. The lite
+# variant (no contact flags, 5 frames) keeps the discriminator from saturating.
 GAIT_HISTORY = 12
+GAIT_LITE_HISTORY = 5
 
 
 def unitree_g1_flat_amp_env_cfg(
-  play: bool = False, key_bodies: bool = False, gait: bool = False
+  play: bool = False,
+  key_bodies: bool = False,
+  gait: bool = False,
+  gait_lite: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_flat_env_cfg(play=play)
-  cfg.observations["amp"] = _amp_group(key_bodies, gait)
+  cfg.observations["amp"] = _amp_group(key_bodies, gait, gait_lite)
   cfg.rewards = {k: v for k, v in cfg.rewards.items() if k in TASK_REWARD_TERMS}
   if play:
     _use_training_command_ranges(cfg)
@@ -36,11 +41,14 @@ def unitree_g1_flat_amp_env_cfg(
 
 
 def unitree_g1_flat_expert_env_cfg(
-  play: bool = False, key_bodies: bool = False, gait: bool = False
+  play: bool = False,
+  key_bodies: bool = False,
+  gait: bool = False,
+  gait_lite: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   """Original hand-shaped reward plus AMP features (expert data, evaluation)."""
   cfg = unitree_g1_flat_env_cfg(play=play)
-  cfg.observations["amp"] = _amp_group(key_bodies, gait)
+  cfg.observations["amp"] = _amp_group(key_bodies, gait, gait_lite)
   if play:
     _use_training_command_ranges(cfg)
   return cfg
@@ -61,7 +69,11 @@ def unitree_g1_flat_expert_gait_env_cfg(play: bool = False) -> ManagerBasedRlEnv
   return cfg
 
 
-def _amp_group(key_bodies: bool, gait: bool):
+def _amp_group(key_bodies: bool, gait: bool, gait_lite: bool = False):
+  if gait_lite:
+    return amp_observation_group(
+      key_bodies=True, feet=True, history=GAIT_LITE_HISTORY, contact=False
+    )
   if gait:
     return amp_observation_group(key_bodies=True, feet=True, history=GAIT_HISTORY)
   return amp_observation_group(key_bodies)

@@ -52,7 +52,10 @@ def key_body_pos_b(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.T
 
 
 def amp_observation_group(
-  key_bodies: bool = False, feet: bool = False, history: int = 0
+  key_bodies: bool = False,
+  feet: bool = False,
+  history: int = 0,
+  contact: bool = True,
 ) -> ObservationGroupCfg:
   """Noise-free proprioceptive state used by the discriminator.
 
@@ -61,6 +64,8 @@ def amp_observation_group(
   ``feet``, foot clearance and contact flags are appended. ``history`` stacks
   the last ``history`` frames so the discriminator sees part of a gait cycle
   (a single 20 ms step cannot tell short fast steps from long ones).
+  ``contact=False`` drops the binary contact flags, which let the
+  discriminator separate expert from policy too easily.
   """
   group = ObservationGroupCfg(
     terms={
@@ -83,9 +88,10 @@ def amp_observation_group(
     group.terms["foot_height"] = ObservationTermCfg(
       func=velocity_mdp.foot_height, params={"sensor_name": "foot_height_scan"}
     )
-    group.terms["foot_contact"] = ObservationTermCfg(
-      func=velocity_mdp.foot_contact, params={"sensor_name": "feet_ground_contact"}
-    )
+    if contact:
+      group.terms["foot_contact"] = ObservationTermCfg(
+        func=velocity_mdp.foot_contact, params={"sensor_name": "feet_ground_contact"}
+      )
   if history > 0:
     group.history_length = history
   return group

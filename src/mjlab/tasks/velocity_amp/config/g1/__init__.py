@@ -79,3 +79,20 @@ register_mjlab_task(
   ),
   runner_cls=VelocityOnPolicyRunner,
 )
+
+# Lite gait features: foot height, 5-frame window, no contact flags.
+register_mjlab_task(
+  task_id="Mjlab-Velocity-Flat-Unitree-G1-AMP-GaitLite",
+  env_cfg=unitree_g1_flat_amp_env_cfg(gait_lite=True),
+  play_env_cfg=unitree_g1_flat_amp_env_cfg(play=True, gait_lite=True),
+  rl_cfg=replace(unitree_g1_ppo_runner_cfg(), experiment_name="g1_velocity_amp"),
+  runner_cls=AmpOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Velocity-Flat-Unitree-G1-Expert-GaitLite",
+  env_cfg=unitree_g1_flat_expert_env_cfg(gait_lite=True),
+  play_env_cfg=unitree_g1_flat_expert_env_cfg(play=True, gait_lite=True),
+  rl_cfg=unitree_g1_ppo_runner_cfg(),
+  runner_cls=VelocityOnPolicyRunner,
+)
