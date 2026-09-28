@@ -56,13 +56,13 @@ old_gait=logs/amp_expert/expert_old_gait.npz
 new_gait=logs/amp_expert/expert_step_gait.npz
 new_kb=logs/amp_expert/expert_step_kb.npz
 
+if [[ -z "${EVAL_ONLY:-}" ]]; then
 echo "== phase A: stepping expert + v5b (parallel) =="
 collect "$old_expert" Mjlab-Velocity-Flat-Unitree-G1-Expert "$base"
 collect "$old_expert" Mjlab-Velocity-Flat-Unitree-G1-Expert-Gait "$old_gait"
 train Mjlab-Velocity-Flat-Unitree-G1-ExpertStep expert-step "$expert_iters" &
 pid_expert=$!
 gail Mjlab-Velocity-Flat-Unitree-G1-AMP-Gait "$old_gait" gail-v5b &
-pid_v5b=$!
 wait "$pid_expert"
 new_expert="$(latest g1_velocity_expert_step expert-step "$expert_iters")"
 echo "new expert: $new_expert"
@@ -72,8 +72,11 @@ collect "$new_expert" Mjlab-Velocity-Flat-Unitree-G1-Expert-Gait "$new_gait"
 collect "$new_expert" Mjlab-Velocity-Flat-Unitree-G1-Expert-KeyBody "$new_kb"
 gail Mjlab-Velocity-Flat-Unitree-G1-AMP-Gait "$new_gait" gail-v5a &
 gail Mjlab-Velocity-Flat-Unitree-G1-AMP-KeyBody "$new_kb" gail-v5c &
-wait
-wait "$pid_v5b"
+wait  # also waits for v5b (a second "wait $pid" would return 127 under set -e)
+
+else
+  new_expert="$(latest g1_velocity_expert_step expert-step "$expert_iters")"
+fi
 
 echo "== evaluation =="
 v5() { latest g1_velocity_amp "gail-v5$1" "$iters"; }
