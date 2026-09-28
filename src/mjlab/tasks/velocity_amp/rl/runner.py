@@ -50,6 +50,9 @@ class AmpOnPolicyRunner(VelocityOnPolicyRunner):
   - ``MJLAB_AMP_STYLE_WEIGHT``: style reward weight (default 2.0).
   - ``MJLAB_AMP_DISC_LR``: discriminator learning rate (default 1e-4).
   - ``MJLAB_AMP_DISC_UPDATES``: discriminator steps per iteration (default 10).
+  - ``MJLAB_AMP_TASK_LERP``: reward = lerp * task + (1 - lerp) * style when in
+    [0, 1] (default -1: task + style).
+  - ``MJLAB_AMP_REPLAY``: policy-transition replay buffer size (default 0).
 
   The exploration overrides of :func:`apply_exploration_overrides` also apply.
   """
@@ -68,6 +71,8 @@ class AmpOnPolicyRunner(VelocityOnPolicyRunner):
       "style_reward_weight": float(os.environ.get("MJLAB_AMP_STYLE_WEIGHT", "2.0")),
       "learning_rate": float(os.environ.get("MJLAB_AMP_DISC_LR", "1e-4")),
       "num_updates": int(os.environ.get("MJLAB_AMP_DISC_UPDATES", "10")),
+      "task_reward_lerp": float(os.environ.get("MJLAB_AMP_TASK_LERP", "-1")),
+      "replay_size": int(os.environ.get("MJLAB_AMP_REPLAY", "0")),
       "step_dt": env.unwrapped.step_dt,  # type: ignore[attr-defined]
     }
     print(f"[INFO] AMP config: {amp_cfg}")

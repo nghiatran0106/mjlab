@@ -9,7 +9,11 @@ from mjlab.tasks.velocity_amp.config.g1.env_cfgs import (
   unitree_g1_flat_expert_gait_env_cfg,
 )
 from mjlab.tasks.velocity_amp.mdp import amp_observation_group
-from mjlab.tasks.velocity_amp.rl.discriminator import Discriminator, ExpertBuffer
+from mjlab.tasks.velocity_amp.rl.discriminator import (
+  Discriminator,
+  ExpertBuffer,
+  TransitionReplayBuffer,
+)
 
 
 @pytest.mark.parametrize("loss_type", ["amp", "gail"])
@@ -66,3 +70,20 @@ def test_stepping_expert_rewards_air_time_with_fixed_commands():
   assert cfg.rewards["air_time"].weight > 0
   assert cfg.rewards["foot_swing_height"].weight < -0.25
   assert "command_vel" not in cfg.curriculum
+
+
+def test_replay_buffer_keeps_most_recent_transitions():
+  buf = TransitionReplayBuffer(capacity=5, obs_dim=1, device="cpu")
+  buf.insert(torch.arange(3.0)[:, None], torch.arange(3.0)[:, None])
+  buf.insert(torch.arange(3.0, 7.0)[:, None], torch.arange(3.0, 7.0)[:, None])
+  assert len(buf) == 5
+  # 0 and 1 were overwritten; 2..6 remain.
+  assert sorted(buf.s[:, 0].tolist()) == [2.0, 3.0, 4.0, 5.0, 6.0]
+  s, s_next = buf.sample(64)
+  assert torch.equal(s, s_next)
+  assert s.min() >= 2.0
+
+
+def test_conditional_features_include_command():
+  group = amp_observation_group(key_bodies=True, command=True)
+  assert {"key_body_pos", "command"} <= set(group.terms)

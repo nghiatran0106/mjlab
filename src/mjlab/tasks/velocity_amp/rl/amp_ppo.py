@@ -15,6 +15,7 @@ from mjlab.tasks.velocity_amp.rl.discriminator import (
   Discriminator,
   ExpertBuffer,
   LossType,
+  TransitionReplayBuffer,
 )
 
 
@@ -36,6 +37,12 @@ class AmpCfg:
   """Discriminator gradient steps per PPO iteration."""
   grad_penalty_weight: float = 10.0
   max_grad_norm: float = 1.0
+  task_reward_lerp: float = -1.0
+  """If in [0, 1], the reward is ``lerp * task + (1 - lerp) * style`` (as in
+  Escontrela et al. 2022, who use 0.3) instead of ``task + style``."""
+  replay_size: int = 0
+  """Capacity of the policy-transition replay buffer; 0 trains the
+  discriminator on the latest rollout only."""
 
 
 class AmpPPO(PPO):
@@ -73,6 +80,10 @@ class AmpPPO(PPO):
         stacklevel=2,
       )
 
+    self.replay: TransitionReplayBuffer | None = None
+    if cfg.replay_size > 0:
+      self.replay = TransitionReplayBuffer(cfg.replay_size, obs_dim, self.device)
+
     self._amp_prev: torch.Tensor | None = None
     self._policy_s: list[torch.Tensor] = []
     self._policy_s_next: list[torch.Tensor] = []
@@ -102,8 +113,12 @@ class AmpPPO(PPO):
       # real transition: give it no style reward and keep it out of training.
       valid = dones.view(-1) == 0
       style = self.discriminator.style_reward(s, s_next) * valid
-      scale = self.amp_cfg.style_reward_weight * self.amp_cfg.step_dt
-      rewards = rewards + scale * style
+      style_term = self.amp_cfg.style_reward_weight * self.amp_cfg.step_dt * style
+      lerp = self.amp_cfg.task_reward_lerp
+      if 0.0 <= lerp <= 1.0:
+        rewards = lerp * rewards + (1.0 - lerp) * style_term
+      else:
+        rewards = rewards + style_term
       self._policy_s.append(s[valid])
       self._policy_s_next.append(s_next[valid].clone())
       self._style_reward_sum += style.sum().item()
@@ -129,16 +144,23 @@ class AmpPPO(PPO):
     # Clone to leave inference mode: rollout tensors cannot be used in autograd.
     policy_s = torch.cat(self._policy_s).clone()
     policy_s_next = torch.cat(self._policy_s_next).clone()
-    batch_size = min(cfg.batch_size, policy_s.shape[0])
+    if self.replay is not None:
+      self.replay.insert(policy_s, policy_s_next)
+    pool = len(self.replay) if self.replay is not None else policy_s.shape[0]
+    batch_size = min(cfg.batch_size, pool)
     totals: dict[str, float] = {}
     for _ in range(cfg.num_updates):
-      idx = torch.randint(0, policy_s.shape[0], (batch_size,), device=self.device)
+      if self.replay is not None:
+        batch_s, batch_s_next = self.replay.sample(batch_size)
+      else:
+        idx = torch.randint(0, policy_s.shape[0], (batch_size,), device=self.device)
+        batch_s, batch_s_next = policy_s[idx], policy_s_next[idx]
       expert_s, expert_s_next = self.expert.sample(batch_size)
       loss, stats = self.discriminator.loss(
         expert_s,
         expert_s_next,
-        policy_s[idx],
-        policy_s_next[idx],
+        batch_s,
+        batch_s_next,
         cfg.grad_penalty_weight,
       )
       self.disc_optimizer.zero_grad()

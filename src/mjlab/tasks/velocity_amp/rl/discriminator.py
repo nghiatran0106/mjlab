@@ -46,6 +46,38 @@ class ExpertBuffer:
     return self.s[idx], self.s_next[idx]
 
 
+class TransitionReplayBuffer:
+  """FIFO buffer of past policy transitions for the discriminator.
+
+  Training the discriminator only on the latest rollout lets it overfit to the
+  current policy and saturate; AMP samples from a replay buffer instead.
+  """
+
+  def __init__(self, capacity: int, obs_dim: int, device: str) -> None:
+    self.s = torch.zeros(capacity, obs_dim, device=device)
+    self.s_next = torch.zeros(capacity, obs_dim, device=device)
+    self.capacity = capacity
+    self._next = 0
+    self._size = 0
+
+  def __len__(self) -> int:
+    return self._size
+
+  def insert(self, s: torch.Tensor, s_next: torch.Tensor) -> None:
+    n = s.shape[0]
+    if n >= self.capacity:
+      s, s_next, n = s[-self.capacity :], s_next[-self.capacity :], self.capacity
+    idx = (torch.arange(n, device=s.device) + self._next) % self.capacity
+    self.s[idx] = s
+    self.s_next[idx] = s_next
+    self._next = (self._next + n) % self.capacity
+    self._size = min(self._size + n, self.capacity)
+
+  def sample(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
+    idx = torch.randint(0, self._size, (n,), device=self.s.device)
+    return self.s[idx], self.s_next[idx]
+
+
 class Discriminator(nn.Module):
   """Scores state transitions (s, s'): high for expert, low for policy."""
 

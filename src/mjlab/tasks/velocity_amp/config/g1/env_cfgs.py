@@ -1,9 +1,13 @@
 """G1 flat velocity configs for the task-only and AMP experiments."""
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.managers.event_manager import EventTermCfg
 from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
-from mjlab.tasks.velocity_amp.mdp import amp_observation_group
+from mjlab.tasks.velocity_amp.mdp import (
+  amp_observation_group,
+  reset_from_expert_states,
+)
 
 # Only the command-tracking terms are kept. Every term that shapes *how* the
 # robot moves (pose, foot clearance, slip, action rate, ...) is dropped, so
@@ -77,3 +81,30 @@ def _amp_group(key_bodies: bool, gait: bool, gait_lite: bool = False):
   if gait:
     return amp_observation_group(key_bodies=True, feet=True, history=GAIT_HISTORY)
   return amp_observation_group(key_bodies)
+
+
+def _conditional_group():
+  """Key-body features plus the velocity command (conditional discriminator)."""
+  return amp_observation_group(key_bodies=True, command=True)
+
+
+def unitree_g1_flat_amp_cond_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Task reward only, conditional discriminator features, optional RSI.
+
+  RSI is enabled at runtime through ``MJLAB_AMP_RSI_FILE``/``MJLAB_AMP_RSI_PROB``
+  (see :func:`reset_from_expert_states`); it runs after the default resets.
+  """
+  cfg = unitree_g1_flat_amp_env_cfg(play=play)
+  cfg.observations["amp"] = _conditional_group()
+  if not play:
+    cfg.events["reset_from_expert"] = EventTermCfg(
+      func=reset_from_expert_states, mode="reset"
+    )
+  return cfg
+
+
+def unitree_g1_flat_expert_cond_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Original rewards with the conditional features (expert data)."""
+  cfg = unitree_g1_flat_expert_env_cfg(play=play)
+  cfg.observations["amp"] = _conditional_group()
+  return cfg
