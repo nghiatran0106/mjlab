@@ -14,6 +14,34 @@ from mjlab.tasks.velocity_amp.rl.discriminator import (
   ExpertBuffer,
   TransitionReplayBuffer,
 )
+from mjlab.tasks.velocity_amp.scripts.convergence import summarize
+
+
+def _metrics(reward: float, lin_err: float, lift: float) -> dict:
+  return {
+    "true_reward_rate": reward,
+    "lin_vel_error_m_s": lin_err,
+    "swing_peak_cm": lift,
+    "down_fraction": 0.0,
+    "falls_per_minute": 0.0,
+  }
+
+
+def test_convergence_reports_first_checkpoint_meeting_target():
+  results = {
+    "expert_step": _metrics(5.0, 0.15, 7.5),
+    "cfg_s1_it250": _metrics(4.0, 0.30, 3.0),
+    "cfg_s1_it500": _metrics(4.6, 0.20, 5.5),  # first to meet the target
+    "cfg_s1_it750": _metrics(4.7, 0.19, 6.0),
+    "cfg_s2_it250": _metrics(3.0, 0.50, 1.0),
+    "cfg_s2_it500": _metrics(3.5, 0.40, 2.0),  # never meets it
+  }
+  summary = summarize(results, expert="expert_step")
+  assert summary["per_run"]["cfg_s1"]["iterations_to_target"] == 500
+  assert summary["per_run"]["cfg_s2"]["iterations_to_target"] is None
+  cfg = summary["per_config"]["cfg"]
+  assert (cfg["seeds"], cfg["reached"]) == (2, 1)
+  assert cfg["iterations_to_target_all"] == [500, None]
 
 
 @pytest.mark.parametrize("loss_type", ["amp", "gail"])

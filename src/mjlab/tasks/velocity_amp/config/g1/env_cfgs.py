@@ -41,6 +41,12 @@ def unitree_g1_flat_amp_env_cfg(
   cfg.rewards = {k: v for k, v in cfg.rewards.items() if k in TASK_REWARD_TERMS}
   if play:
     _use_training_command_ranges(cfg)
+  else:
+    # Reference state initialization; a no-op unless MJLAB_AMP_RSI_FILE and
+    # MJLAB_AMP_RSI_PROB are set, so the default resets apply otherwise.
+    cfg.events["reset_from_expert"] = EventTermCfg(
+      func=reset_from_expert_states, mode="reset"
+    )
   return cfg
 
 
@@ -96,10 +102,6 @@ def unitree_g1_flat_amp_cond_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
   """
   cfg = unitree_g1_flat_amp_env_cfg(play=play)
   cfg.observations["amp"] = _conditional_group()
-  if not play:
-    cfg.events["reset_from_expert"] = EventTermCfg(
-      func=reset_from_expert_states, mode="reset"
-    )
   return cfg
 
 
