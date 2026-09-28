@@ -1,0 +1,77 @@
+% !TEX program = xelatex
+% Báo cáo kỹ thuật: AMP/GAIL định hướng policy đi bộ G1 trên mjlab.
+% Biên dịch: cd report && latexmk -xelatex main.tex
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage{babel}
+\babelprovide[import,main]{vietnamese}
+% Font của TeX Live (có sẵn trên Overleaf), nạp theo tên file.
+\setmainfont{texgyretermes}[Extension=.otf, UprightFont=*-regular,
+  BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]
+\setsansfont{texgyreheros}[Extension=.otf, UprightFont=*-regular,
+  BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]
+\setmonofont{lmmono10}[Extension=.otf, UprightFont=*-regular, Scale=0.95]
+
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,multirow,array}
+\usepackage{graphicx}
+\usepackage[table]{xcolor}
+\usepackage{float}
+\usepackage{caption,subcaption}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage[most]{tcolorbox}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=green!40!black,
+  urlcolor=blue!60!black]{hyperref}
+\usepackage{cleveref}
+\crefname{figure}{Hình}{Hình}\Crefname{figure}{Hình}{Hình}
+\crefname{table}{Bảng}{Bảng}\Crefname{table}{Bảng}{Bảng}
+\crefname{section}{Mục}{Mục}\Crefname{section}{Mục}{Mục}
+\crefname{equation}{}{}\Crefname{equation}{}{}
+
+% ---------------------------------------------------------------------------
+% Macro
+% ---------------------------------------------------------------------------
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO:} #1\textbf{]}}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\pit}{\pi_\theta}
+\newcommand{\code}[1]{\texttt{#1}}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
+  backgroundcolor=\color{gray!6},columns=fullflexible}
+
+\newtcolorbox{algobox}[1]{colback=gray!4,colframe=gray!60,
+  title={#1},fonttitle=\bfseries,left=4pt,right=4pt}
+
+\newtcolorbox{notebox}{colback=blue!3,colframe=blue!40,left=4pt,right=4pt}
+
+% Chèn hình nếu đã có, ngược lại hiện khung giữ chỗ.
+\newcommand{\maybefig}[2]{%
+  \IfFileExists{figures/#1}{\includegraphics[width=#2]{figures/#1}}{%
+    \fbox{\parbox[c][4.5cm][c]{\dimexpr#2-2\fboxsep-2\fboxrule}{\centering\todo{hình \texttt{figures/\detokenize{#1}}}}}}}
+
+% Một dải ảnh chụp robot: nhãn + ảnh.
+\newcommand{\snap}[2]{\makebox[2.2cm][l]{\small #1}%
+  \includegraphics[width=0.8\linewidth]{figures/snap_#2_crop.png}\\[1pt]}
+
+% Hộp mô tả một bước: tiêu đề, (vào / làm / ra), giải thích công thức.
+\newcommand{\io}[3]{%
+\begin{tcolorbox}[colback=gray!3,colframe=gray!50,left=4pt,right=4pt,top=2pt,
+  bottom=2pt,title={#1},fonttitle=\bfseries\small]
+\small #2
+\par\smallskip #3
+\end{tcolorbox}}
+
+\title{\textbf{Định hướng policy đi bộ cho robot hình người Unitree G1\\
+bằng Adversarial Imitation Learning trên mjlab}\\[4pt]
+\large Báo cáo kỹ thuật -- Sprint 1}
+\author{Trần Phú Nghĩa}
+\date{25/09/2026}
+
