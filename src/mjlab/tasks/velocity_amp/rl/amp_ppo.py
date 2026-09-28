@@ -6,6 +6,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import torch
 from rsl_rl.algorithms import PPO
 from tensordict import TensorDict
@@ -43,6 +44,37 @@ class AmpCfg:
   replay_size: int = 0
   """Capacity of the policy-transition replay buffer; 0 trains the
   discriminator on the latest rollout only."""
+  lerp_start: float = -1.0
+  """If in [0, 1], ``task_reward_lerp`` follows a schedule: it stays at
+  ``lerp_start`` for ``lerp_hold_iters`` iterations, then moves linearly to
+  ``task_reward_lerp`` over ``lerp_ramp_iters`` iterations. A high start
+  (task-heavy) lets the policy learn to walk before the style reward dominates."""
+  lerp_hold_iters: int = 0
+  lerp_ramp_iters: int = 0
+  bc_file: str = ""
+  """``.npz`` with expert ``obs`` (actor observations) and ``actions``. If set,
+  the actor is first trained to regress the expert actions (behavior cloning)."""
+  bc_steps: int = 2000
+  bc_batch_size: int = 4096
+  bc_learning_rate: float = 1e-3
+
+
+def scheduled_lerp(
+  iteration: int, start: float, end: float, hold: int, ramp: int
+) -> float:
+  """``start`` for ``hold`` iterations, then linear to ``end`` over ``ramp``.
+
+  Returns ``end`` unchanged when either value is outside [0, 1] (no schedule, or
+  the additive reward when ``end`` is negative).
+  """
+  if not (0.0 <= start <= 1.0 and 0.0 <= end <= 1.0):
+    return end
+  t = iteration - hold
+  if t <= 0:
+    return start
+  if t >= ramp:
+    return end
+  return start + (end - start) * t / ramp
 
 
 class AmpPPO(PPO):
@@ -84,6 +116,10 @@ class AmpPPO(PPO):
     if cfg.replay_size > 0:
       self.replay = TransitionReplayBuffer(cfg.replay_size, obs_dim, self.device)
 
+    self._iteration = 0
+    if cfg.bc_file:
+      self._behavior_cloning()
+
     self._amp_prev: torch.Tensor | None = None
     self._policy_s: list[torch.Tensor] = []
     self._policy_s_next: list[torch.Tensor] = []
@@ -114,7 +150,7 @@ class AmpPPO(PPO):
       valid = dones.view(-1) == 0
       style = self.discriminator.style_reward(s, s_next) * valid
       style_term = self.amp_cfg.style_reward_weight * self.amp_cfg.step_dt * style
-      lerp = self.amp_cfg.task_reward_lerp
+      lerp = self.current_lerp()
       if 0.0 <= lerp <= 1.0:
         rewards = lerp * rewards + (1.0 - lerp) * style_term
       else:
@@ -125,8 +161,21 @@ class AmpPPO(PPO):
       self._style_reward_count += style.numel()
     super().process_env_step(obs, rewards, dones, extras)
 
+  def current_lerp(self) -> float:
+    """Task-reward weight of the combined reward at the current iteration."""
+    cfg = self.amp_cfg
+    return scheduled_lerp(
+      self._iteration,
+      cfg.lerp_start,
+      cfg.task_reward_lerp,
+      cfg.lerp_hold_iters,
+      cfg.lerp_ramp_iters,
+    )
+
   def update(self) -> dict[str, float]:
     loss_dict = super().update()
+    loss_dict["amp_task_lerp"] = self.current_lerp()
+    self._iteration += 1
     if self.style_enabled and self._policy_s:
       loss_dict.update(self._update_discriminator())
       loss_dict["amp_style_reward"] = self._style_reward_sum / max(
@@ -170,6 +219,29 @@ class AmpPPO(PPO):
       for k, v in stats.items():
         totals[k] = totals.get(k, 0.0) + v / cfg.num_updates
     return totals
+
+  def _behavior_cloning(self) -> None:
+    """Pretrain the actor mean to reproduce the expert actions."""
+    cfg = self.amp_cfg
+    data = np.load(cfg.bc_file)
+    obs = torch.as_tensor(data["obs"], dtype=torch.float32, device=self.device)
+    actions = torch.as_tensor(data["actions"], dtype=torch.float32, device=self.device)
+    group = self.actor.obs_groups[0]
+    # Fit the actor's observation normalizer on the expert observations first.
+    for chunk in obs.split(cfg.bc_batch_size):
+      self.actor.update_normalization(
+        TensorDict({group: chunk}, batch_size=[len(chunk)])
+      )
+    optimizer = torch.optim.Adam(self.actor.parameters(), lr=cfg.bc_learning_rate)
+    loss = torch.zeros(())
+    for _ in range(cfg.bc_steps):
+      idx = torch.randint(0, obs.shape[0], (cfg.bc_batch_size,), device=self.device)
+      batch = TensorDict({group: obs[idx]}, batch_size=[len(idx)])
+      loss = (self.actor(batch) - actions[idx]).pow(2).mean()
+      optimizer.zero_grad()
+      loss.backward()
+      optimizer.step()
+    print(f"[INFO] Behavior cloning: {cfg.bc_steps} steps, final MSE {loss.item():.4f}")
 
   def train_mode(self) -> None:
     super().train_mode()

@@ -53,6 +53,9 @@ class AmpOnPolicyRunner(VelocityOnPolicyRunner):
   - ``MJLAB_AMP_TASK_LERP``: reward = lerp * task + (1 - lerp) * style when in
     [0, 1] (default -1: task + style).
   - ``MJLAB_AMP_REPLAY``: policy-transition replay buffer size (default 0).
+  - ``MJLAB_AMP_LERP_START``, ``MJLAB_AMP_LERP_HOLD``, ``MJLAB_AMP_LERP_RAMP``:
+    schedule for the task-reward weight (see ``AmpCfg.lerp_start``).
+  - ``MJLAB_AMP_BC_FILE``, ``MJLAB_AMP_BC_STEPS``: behavior-cloning pretraining.
 
   The exploration overrides of :func:`apply_exploration_overrides` also apply.
   """
@@ -73,6 +76,11 @@ class AmpOnPolicyRunner(VelocityOnPolicyRunner):
       "num_updates": int(os.environ.get("MJLAB_AMP_DISC_UPDATES", "10")),
       "task_reward_lerp": float(os.environ.get("MJLAB_AMP_TASK_LERP", "-1")),
       "replay_size": int(os.environ.get("MJLAB_AMP_REPLAY", "0")),
+      "lerp_start": float(os.environ.get("MJLAB_AMP_LERP_START", "-1")),
+      "lerp_hold_iters": int(os.environ.get("MJLAB_AMP_LERP_HOLD", "0")),
+      "lerp_ramp_iters": int(os.environ.get("MJLAB_AMP_LERP_RAMP", "0")),
+      "bc_file": os.environ.get("MJLAB_AMP_BC_FILE", ""),
+      "bc_steps": int(os.environ.get("MJLAB_AMP_BC_STEPS", "2000")),
       "step_dt": env.unwrapped.step_dt,  # type: ignore[attr-defined]
     }
     print(f"[INFO] AMP config: {amp_cfg}")

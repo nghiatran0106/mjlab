@@ -9,6 +9,7 @@ from mjlab.tasks.velocity_amp.config.g1.env_cfgs import (
   unitree_g1_flat_expert_gait_env_cfg,
 )
 from mjlab.tasks.velocity_amp.mdp import amp_observation_group
+from mjlab.tasks.velocity_amp.rl.amp_ppo import scheduled_lerp
 from mjlab.tasks.velocity_amp.rl.discriminator import (
   Discriminator,
   ExpertBuffer,
@@ -115,3 +116,15 @@ def test_replay_buffer_keeps_most_recent_transitions():
 def test_conditional_features_include_command():
   group = amp_observation_group(key_bodies=True, command=True)
   assert {"key_body_pos", "command"} <= set(group.terms)
+
+
+def test_task_reward_lerp_schedule():
+  # Hold at 0.9 for 250 iterations, then ramp linearly to 0.3 over 500.
+  assert scheduled_lerp(0, 0.9, 0.3, 250, 500) == 0.9
+  assert scheduled_lerp(250, 0.9, 0.3, 250, 500) == 0.9
+  assert scheduled_lerp(500, 0.9, 0.3, 250, 500) == pytest.approx(0.6)
+  assert scheduled_lerp(750, 0.9, 0.3, 250, 500) == pytest.approx(0.3)
+  assert scheduled_lerp(5000, 0.9, 0.3, 250, 500) == pytest.approx(0.3)
+  # No schedule: the end value (or the additive reward, -1) is used as is.
+  assert scheduled_lerp(100, -1.0, 0.3, 250, 500) == 0.3
+  assert scheduled_lerp(100, 0.9, -1.0, 250, 500) == -1.0

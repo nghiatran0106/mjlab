@@ -36,6 +36,12 @@ def main() -> None:
     help="Also save robot states every --state-every steps (for RSI).",
   )
   parser.add_argument("--state-every", type=int, default=5)
+  parser.add_argument(
+    "--bc-out",
+    type=Path,
+    default=None,
+    help="Also save actor observations and expert actions (behavior cloning).",
+  )
   args = parser.parse_args()
 
   # Pushes stay on: the AMP policy is trained with pushes, so the expert data
@@ -47,6 +53,7 @@ def main() -> None:
 
   robot = env.scene["robot"]
   s_list, s_next_list, states = [], [], []
+  bc_obs, bc_actions = [], []
   obs = wrapped.get_observations()
   with torch.inference_mode():
     for t in range(args.steps):
@@ -54,7 +61,11 @@ def main() -> None:
       if args.states_out is not None and t >= 50 and t % args.state_every == 0:
         states.append(snapshot_state(robot))
       s = obs["amp"].clone()
-      obs, _, dones, _ = wrapped.step(policy(obs))
+      actions = policy(obs)
+      if args.bc_out is not None:
+        bc_obs.append(obs["actor"].cpu())
+        bc_actions.append(actions.cpu())
+      obs, _, dones, _ = wrapped.step(actions)
       valid = dones == 0
       s_list.append(s[valid].cpu())
       s_next_list.append(obs["amp"][valid].cpu())
@@ -66,6 +77,15 @@ def main() -> None:
   np.savez_compressed(args.out, s=s_all, s_next=s_next_all)
   print(f"[INFO] Saved {s_all.shape[0]} transitions of dim {s_all.shape[1]}")
   print(f"[INFO] -> {args.out}")
+  if args.bc_out is not None:
+    args.bc_out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+      args.bc_out,
+      obs=torch.cat(bc_obs).numpy().astype(np.float32),
+      actions=torch.cat(bc_actions).numpy().astype(np.float32),
+    )
+    print(f"[INFO] Saved {sum(len(a) for a in bc_actions)} (obs, action) pairs")
+    print(f"[INFO] -> {args.bc_out}")
   if args.states_out is not None:
     save_expert_states(args.states_out, states)
     print(f"[INFO] Saved {sum(len(d['quat']) for d in states)} states")
