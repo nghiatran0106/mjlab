@@ -103,14 +103,8 @@ và lệnh vận tốc $c = (v_x^*, v_y^*, \omega_z^*)$) và xuất hành độn
 $\gamma = 0{,}99$.
 
 Cấu hình gốc của \code{mjlab} dùng reward gồm 14 term viết tay: hai term bám vận tốc
-\begin{equation}
-  r^G_t = \Delta t\Big(2\,e^{-\|c_{xy} - v_{xy}\|^2 / 0{,}25}
-  + 2\,e^{-(c_\omega - \omega_z)^2 / 0{,}5}\Big),
-  \label{eq:task}
-\end{equation}
-với $v_{xy}$, $\omega_z$ là vận tốc dài và vận tốc xoay thực của thân, cùng 12 term quy
-định dáng đi (thân thẳng, tư thế khớp, độ giật hành động, độ cao nhấc chân, trượt chân,
-tự va chạm, \ldots). Ta gọi $r^G$ là \emph{task reward}.
+(\emph{task reward} $r^G$, \cref{eq:task}) và 12 term quy định dáng đi (thân thẳng, tư thế
+khớp, độ giật hành động, độ cao nhấc chân, trượt chân, tự va chạm, \ldots).
 
 \textbf{Mục tiêu.} Chỉ giữ $r^G$; thay 12 term dáng đi bằng \emph{style reward} $r^S$
 học từ dữ liệu của một expert, sao cho policy đi theo lệnh với dáng đi giống expert và
@@ -119,117 +113,31 @@ hội tụ trong $\le 2000$ iteration.
 % ===========================================================================
 \section{Phương pháp}
 % ===========================================================================
-\subsection{Adversarial imitation learning (GAIL)}
-Gọi $\rho_\pi$ là phân phối transition mà policy $\pi$ sinh ra. Imitation learning tìm
-$\pi$ sao cho $\rho_\pi$ gần với phân phối của expert $\rho_E$. GAIL~\cite{ho2016gail}
-đặt bài toán thành một trò chơi min--max giữa policy và một discriminator
-$D_\psi : \mathcal{S} \times \mathcal{S} \to \R$ (đầu ra là logit $d$):
-\begin{equation}
-  \min_\pi \max_\psi \;
-  \E_{(s,s') \sim \mathcal{D}_E}\big[\log \sigma(d)\big]
-  + \E_{(s,s') \sim \pi}\big[\log(1 - \sigma(d))\big],
-  \qquad d = D_\psi(s, s'),
-  \label{eq:gail-game}
-\end{equation}
-với $\sigma$ là hàm sigmoid và $\mathcal{D}_E$ là tập transition của expert. Ở điểm tối ưu
-của discriminator, giá trị hàm mục tiêu tương đương divergence Jensen--Shannon giữa
-$\rho_\pi$ và $\rho_E$ (sai khác một hằng số), nên cực tiểu theo $\pi$ tương ứng với kéo
-hai phân phối lại gần nhau.
-
-\textbf{Discriminator} được huấn luyện như một bộ phân loại nhị phân:
-\begin{equation}
-  \mathcal{L}_D(\psi) = -\E_{\mathcal{D}_E}\big[\log \sigma(d)\big]
-  - \E_{\mathcal{B}_\pi}\big[\log(1 - \sigma(d))\big]
-  + \frac{w_\text{gp}}{2}\,\E_{\mathcal{D}_E}\big[\|\nabla_{(s,s')} d\|^2\big],
-  \label{eq:disc}
-\end{equation}
-trong đó $\mathcal{B}_\pi$ là tập transition của policy và số hạng cuối là gradient
-penalty~\cite{mescheder2018gp} ($w_\text{gp} = 10$), giữ $D$ trơn quanh dữ liệu expert.
-
-\textbf{Style reward} là reward mà policy nhận được từ discriminator:
-\begin{equation}
-  r^S(s, s') = -\log\big(1 - \sigma(d)\big) = \log\big(1 + e^{d}\big).
-  \label{eq:gail-reward}
-\end{equation}
-$r^S$ tăng đơn điệu theo xác suất $\sigma(d)$ mà discriminator gán cho việc transition
-thuộc expert; cực đại hóa $r^S$ tương ứng với cực tiểu \eqref{eq:gail-game} theo $\pi$.
-Policy và discriminator được cập nhật xen kẽ. Trong báo cáo này chỉ phần reward của GAIL
-được dùng; policy được tối ưu bằng PPO thay cho TRPO của bài gốc.
-
-\textbf{Discriminator trên transition.} GAIL gốc dùng cặp (trạng thái, hành động). Ở
-đây discriminator nhận cặp trạng thái liên tiếp $(s_t, s_{t+1})$ (imitation from
-observation), để không phụ thuộc vào không gian hành động của expert.
-
-\textbf{Bão hòa.} Nếu discriminator phân biệt quá dễ ($d \ll 0$ trên dữ liệu policy)
-thì $r^S \approx 0$ và gradient của nó theo trạng thái gần bằng 0: policy mất tín hiệu
-style. Đây là chế độ thất bại chính của các cấu hình trước.
-
-\subsection{Adversarial Motion Priors (AMP)}
-AMP~\cite{peng2021amp} là một biến thể của GAIL cho điều khiển chuyển động. Khác biệt
-chính nằm ở hàm mục tiêu của discriminator: thay entropy chéo bằng hồi quy bình
-phương tối thiểu (least-squares GAN) về nhãn $+1$ cho expert và $-1$ cho policy,
-\begin{equation}
-  \mathcal{L}_D^\text{AMP} = \E_{\mathcal{D}_E}\big[(d - 1)^2\big]
-  + \E_{\mathcal{B}_\pi}\big[(d + 1)^2\big] + \frac{w_\text{gp}}{2}\,
-  \E_{\mathcal{D}_E}\big[\|\nabla d\|^2\big],
-  \qquad
-  r^S_\text{AMP} = \max\big(0,\; 1 - \tfrac14 (d - 1)^2\big).
-  \label{eq:amp}
-\end{equation}
-Style reward của AMP bị chặn trong $[0, 1]$ và đạt cực đại khi $d = 1$ (giá trị gán cho
-expert); reward của GAIL \eqref{eq:gail-reward} không bị chặn trên. AMP cũng đề xuất
-replay buffer, RSI và đặc trưng vị trí bàn chân, bàn tay cho discriminator. Báo cáo so
-sánh hai hàm mục tiêu này (\cref{sec:exp}).
-
-\subsection{Kết hợp reward}
-Reward đưa cho PPO là tổ hợp lồi của task reward và style reward:
-\begin{equation}
-  r_t = \lambda\, r^G_t + (1 - \lambda)\, w_S\,\Delta t\, r^S(s_t, s_{t+1}),
-  \qquad \lambda = 0{,}3,\; w_S = 4,
-  \label{eq:mix}
-\end{equation}
-theo Escontrela et al.~\cite{escontrela2022}. Hệ số $w_S \Delta t$ đưa $r^S$ về cùng
-thang đo với $r^G$ (đã nhân $\Delta t$), để style chiếm khoảng 70\% tổng reward. Cặp
-$(s_t, s_{t+1})$ nằm ở hai phía của một lần reset không phải là transition thật và bị
-loại.
-
-\subsection{Đặc trưng của discriminator}
-Trạng thái đưa vào discriminator là $s = \Phi(\cdot) \in \R^{83}$, tính bằng cùng một
-hàm cho expert và policy: vận tốc dài và vận tốc góc của thân trong hệ tọa độ thân
-(6), hướng trọng lực trong hệ thân (3), độ cao thân (1), góc và vận tốc 29 khớp (58),
-vị trí hai bàn chân và hai bàn tay so với thân trong hệ thân (12), và lệnh vận tốc $c$
-(3). Việc đưa $c$ vào làm discriminator \emph{có điều kiện theo lệnh}: nó so sánh
-chuyển động của policy với chuyển động của expert dưới cùng một lệnh, thay vì với phân
-phối chuyển động gộp của mọi lệnh. Đầu vào được chuẩn hóa bằng trung bình và độ lệch
-chuẩn của dữ liệu expert.
-
-\subsection{Ổn định huấn luyện}
-\begin{itemize}[leftmargin=*,itemsep=1pt]
-  \item \textbf{Replay buffer.} $\mathcal{B}_\pi$ trong \eqref{eq:disc} được lấy mẫu từ
-    một bộ đệm FIFO chứa $10^6$ transition gần nhất của policy, thay vì chỉ rollout của
-    iteration hiện tại. Discriminator do đó không khớp quá mức với policy hiện tại, giảm
-    bão hòa~\cite{peng2021amp}.
-  \item \textbf{Không dùng entropy bonus.} Khi không còn term phạt độ giật, entropy bonus
-    làm độ lệch chuẩn của hành động tăng liên tục; transition nhiễu dễ bị phân biệt và
-    discriminator bão hòa. Độ lệch chuẩn ban đầu $\sigma_0 = 1$ được giữ để đủ khám phá.
-\end{itemize}
-
-\subsection{Reference State Initialization (RSI)}
-Mỗi episode bắt đầu từ một trạng thái lấy từ phân phối ban đầu $\rho_0$ (ở đây: tư thế
-đứng mặc định với nhiễu nhỏ). RSI~\cite{peng2021amp} thay $\rho_0$ bằng hỗn hợp với phân
-phối trạng thái của dữ liệu mẫu:
-\begin{equation}
-  s_0 \sim (1 - p)\,\rho_0 + p\,\rho_E, \qquad p = 0{,}85 .
-  \label{eq:rsi}
-\end{equation}
-Khi thu dữ liệu expert, ngoài đặc trưng $\Phi$ ta lưu trạng thái mô phỏng đầy đủ (độ
-cao, hướng, vận tốc dài và góc của thân, góc và vận tốc khớp); khi một episode reset, với
-xác suất $p$ robot được đặt vào một trạng thái như vậy. Policy do đó được huấn luyện ngay
-từ đầu trên các pha của chu kỳ bước chân của expert, thay vì phải tự khám phá chúng từ
-tư thế đứng --- điều khó xảy ra khi style reward đã thưởng cho việc đứng với tư thế giống
+\subsection{Tổng quan}
+Thuật toán huấn luyện đồng thời hai mạng neural (\cref{tab:nets}). Reward của policy
+lấy một phần từ discriminator: transition được discriminator đánh giá càng giống của
+expert thì policy nhận reward càng lớn. Discriminator được tối ưu để tách transition của
+expert khỏi transition của policy, còn policy được tối ưu để xóa sự khác biệt đó; khi
+discriminator không còn phân biệt được, phân phối chuyển động của policy trùng với của
 expert.
 
-\subsection{Tóm tắt thuật toán}
+\begin{table}[H]
+\centering
+\caption{Hai mạng được huấn luyện.}
+\label{tab:nets}
+\small
+\begin{tabular}{@{}p{3.2cm}p{3.6cm}p{3.1cm}p{4.3cm}@{}}
+\toprule
+Mạng & Đầu vào & Đầu ra & Mục tiêu tối ưu \\
+\midrule
+Policy $\pi_\theta$ (kèm critic $V_\phi$) & quan sát $o_t$ (99 chiều) & hành động
+$a_t \in \R^{29}$ (góc đặt cho 29 khớp) & cực đại tổng reward có chiết khấu \\
+Discriminator $D_\psi$ & cặp $(s_t, s_{t+1})$, $2 \times 83$ chiều & logit $d \in \R$ &
+phân loại transition: expert (1) hay policy (0) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[
@@ -242,8 +150,7 @@ expert.
   \node[box=3.4cm,fill=blue!6] (exp) {Expert $\pi_E$};
   \node[box=3.4cm,fill=blue!6,below=of exp] (data)
     {$\mathcal{D}_E$: $(s, s')$ và trạng thái mô phỏng};
-  \draw[arr] (exp) -- node[right,font=\scriptsize]{rollout} (data);
-  \node[num] at ($(exp.north west)+(0.1,0)$) {1};
+  \draw[arr] (exp) -- node[right,font=\scriptsize]{thu một lần} (data);
   \node[box,right=18mm of exp,fill=green!6] (env) {Môi trường\\(4096 bản song song)};
   \node[box,right=20mm of env,fill=green!6] (pol) {Policy $\pi_\theta$};
   \node[box,below=of env,fill=orange!8] (disc) {Discriminator $D_\psi$\\ $\to r^S$};
@@ -253,35 +160,196 @@ expert.
   \draw[arr] (env) -- node[left,font=\scriptsize,align=right]{$(s_t, s_{t+1})$} (disc);
   \draw[arr] (disc) -- node[above,font=\scriptsize]{$r^S_t$} (mix);
   \draw[arr] (env.south east) -- node[above right,font=\scriptsize,inner sep=1pt]{$r^G_t$} (mix.north west);
-  \draw[arr] (mix.east) -- ++(0.4,0) |- node[right,pos=0.25,font=\scriptsize]{PPO} (pol.east);
-  \draw[arr] (disc) -- (buf);
+  \draw[arr] (mix.east) -- ++(0.4,0) |- node[right,pos=0.25,font=\scriptsize]{B: PPO} (pol.east);
+  \draw[arr] (disc) -- node[left,font=\scriptsize]{C} (buf);
   \draw[arr] (data.east) -- ++(0.6,0) |- node[above,pos=0.75,font=\scriptsize]{mẫu expert} (disc.west);
   \draw[arr] (exp.east) -- node[above,font=\scriptsize]{RSI} (env.west);
-  \draw[arr] (buf.east) -- ++(0.5,0) |- node[right,pos=0.25,font=\scriptsize]{mẫu policy} ($(disc.east)+(0,-0.2)$);
-  \node[num] at ($(env.north west)+(0.1,0)$) {2};
-  \node[num] at ($(disc.north west)+(0.1,0)$) {3};
-  \node[num] at ($(mix.north west)+(0.1,0)$) {4};
-  \node[num] at ($(pol.north west)+(0.1,0)$) {5};
-  \node[num] at ($(buf.north west)+(0.1,0)$) {6};
+  \draw[arr] (buf.east) -- ++(0.5,0) |- node[right,pos=0.25,font=\scriptsize]{D: mẫu policy} ($(disc.east)+(0,-0.2)$);
+  \node[num] at ($(env.north west)+(0.1,0)$) {A};
 \end{tikzpicture}
-\caption{Luồng dữ liệu. Bước 1 thực hiện một lần; bước 2--6 lặp lại mỗi iteration.}
+\caption{Luồng dữ liệu. Dữ liệu expert được thu một lần; các bước A--D
+(\cref{sec:iter}) lặp lại mỗi iteration.}
 \label{fig:pipeline}
 \end{figure}
 
+% ---------------------------------------------------------------------------
+\subsection{Chuẩn bị dữ liệu}
+Expert là một policy PPO đã huấn luyện với đủ 14 reward term (3000 iteration). Chạy
+expert tất định 10\,s trên 512 môi trường với lệnh ngẫu nhiên, ta thu hai tập dữ liệu:
+
+\textbf{Tập transition $\mathcal{D}_E$} gồm 256\,000 cặp $(s_t, s_{t+1})$. Mỗi $s = \Phi(\cdot)
+\in \R^{83}$ là vector mô tả chuyển động, tính bằng cùng một hàm cho expert và policy:
+\begin{center}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+Thành phần & Số chiều \\
+\midrule
+Vận tốc dài và vận tốc góc của thân (hệ tọa độ thân) & 3 + 3 \\
+Hướng trọng lực trong hệ thân (độ nghiêng của thân) & 3 \\
+Độ cao thân & 1 \\
+Góc và vận tốc 29 khớp & 29 + 29 \\
+Vị trí 2 bàn chân và 2 bàn tay so với thân (hệ thân) & 12 \\
+Lệnh vận tốc $c$ & 3 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Discriminator nhận \emph{cặp} trạng thái liên tiếp vì một trạng thái đơn lẻ chỉ mô tả tư
+thế, còn cặp liên tiếp mô tả chuyển động. Việc đưa lệnh $c$ vào $s$ làm discriminator
+\emph{có điều kiện theo lệnh}: chuyển động của policy được so với chuyển động của expert
+dưới cùng một lệnh, thay vì với phân phối gộp của mọi lệnh. Đầu vào được chuẩn hóa bằng
+trung bình và độ lệch chuẩn của $\mathcal{D}_E$.
+
+\textbf{Tập trạng thái cho RSI} gồm 46\,080 trạng thái mô phỏng đầy đủ của expert (độ cao,
+hướng, vận tốc dài và góc của thân, góc và vận tốc từng khớp), lấy mỗi 5 bước sau giây
+đầu tiên, tức khi expert đang đi và trải đều các pha của chu kỳ bước chân.
+
+% ---------------------------------------------------------------------------
+\subsection{Một iteration}
+\label{sec:iter}
+Mỗi iteration gồm bốn bước A--D; huấn luyện chạy 2000 iteration.
+
+\paragraph{A. Rollout.} 4096 môi trường chạy song song 24 bước ($\approx$98\,000 bước). Tại
+mỗi bước, trên mỗi môi trường:
 \begin{enumerate}[leftmargin=*,itemsep=2pt]
-  \item \textbf{Dữ liệu mẫu.} Chạy expert tất định trên 512 môi trường trong 10\,s với lệnh
-    ngẫu nhiên; lưu $|\mathcal{D}_E| = 256\,000$ cặp $(s, s')$ và các trạng thái mô phỏng
-    cho RSI. Expert là một policy PPO huấn luyện với đủ 14 reward term (3000 iteration).
-  \item \textbf{Rollout.} 4096 môi trường $\times$ 24 bước; episode reset theo \eqref{eq:rsi};
-    ghi $(s_t, s_{t+1})$ và $r^G_t$.
-  \item \textbf{Style reward.} Tính $r^S$ theo \eqref{eq:gail-reward} (hoặc \eqref{eq:amp}).
-  \item \textbf{Kết hợp} theo \eqref{eq:mix}.
-  \item \textbf{Cập nhật policy} bằng PPO (GAE $\lambda = 0{,}95$, clip 0,2, 5 epoch $\times$
-    4 mini-batch, learning rate $10^{-3}$ thích nghi theo KL).
-  \item \textbf{Cập nhật discriminator.} Thêm transition của rollout vào $\mathcal{B}_\pi$;
-    thực hiện 5 bước Adam (learning rate $10^{-4}$, batch 4096) trên \eqref{eq:disc} với mẫu
-    từ $\mathcal{D}_E$ và $\mathcal{B}_\pi$.
+  \item Policy lấy mẫu hành động $a_t \sim \mathcal{N}(\mu_\theta(o_t), \sigma^2 I)$. Độ lệch
+    chuẩn $\sigma$ là tham số học được, khởi tạo $\sigma_0 = 1$; không có entropy bonus nên
+    $\sigma$ giảm dần trong quá trình huấn luyện.
+  \item Mô phỏng tiến 20\,ms; ghi cặp $(s_t, s_{t+1})$.
+  \item \emph{Task reward} đo mức bám lệnh ($v$: vận tốc thực, $c$: lệnh):
+    \begin{equation}
+      r^G_t = \Delta t\Big(2\,e^{-\|c_{xy} - v_{xy}\|^2 / 0{,}25}
+      + 2\,e^{-(c_\omega - \omega_z)^2 / 0{,}5}\Big) \in [0;\ 0{,}08].
+      \label{eq:task}
+    \end{equation}
+  \item \emph{Style reward} từ discriminator: $d = D_\psi(s_t, s_{t+1})$ và
+    \begin{equation}
+      r^S_t = -\log\big(1 - \sigma(d)\big) = \log\big(1 + e^{d}\big),
+      \label{eq:gail-reward}
+    \end{equation}
+    tăng đơn điệu theo xác suất $\sigma(d)$ mà discriminator gán cho việc transition thuộc
+    expert.
+  \item \emph{Reward kết hợp} đưa cho PPO, theo~\cite{escontrela2022}:
+    \begin{equation}
+      r_t = \lambda\, r^G_t + (1 - \lambda)\, w_S\,\Delta t\, r^S_t,
+      \qquad \lambda = 0{,}3,\ w_S = 4 .
+      \label{eq:mix}
+    \end{equation}
+    Hệ số $w_S \Delta t$ đưa $r^S$ về cùng thang đo với $r^G$; trong huấn luyện, thành phần
+    style chiếm khoảng 60--70\% tổng reward.
+  \item Khi episode kết thúc (ngã hoặc hết 20\,s), môi trường được reset. Với xác suất
+    $p = 0{,}85$ robot được đặt vào một trạng thái lấy ngẫu nhiên từ tập trạng thái của
+    expert (\emph{reference state initialization}, RSI~\cite{peng2021amp}); ngược lại bắt
+    đầu từ tư thế đứng mặc định:
+    \begin{equation}
+      s_0 \sim (1 - p)\,\rho_0 + p\,\rho_E .
+      \label{eq:rsi}
+    \end{equation}
+    Cặp $(s_t, s_{t+1})$ nằm hai phía của lần reset không phải transition thật: nó bị loại
+    khỏi dữ liệu của discriminator và nhận $r^S = 0$.
 \end{enumerate}
+
+\paragraph{B. Cập nhật policy (PPO).} Critic $V_\phi$ ước lượng tổng reward tương lai có
+chiết khấu ($\gamma = 0{,}99$); advantage $\hat A_t$ được tính bằng GAE ($\lambda_\text{GAE}
+= 0{,}95$) và cho biết hành động $a_t$ tốt hơn hay kém hơn mức kỳ vọng. PPO tăng xác suất
+các hành động có $\hat A_t > 0$, giảm các hành động có $\hat A_t < 0$, với tỉ số xác suất
+giữa policy mới và cũ bị cắt trong $[0{,}8;\ 1{,}2]$ để mỗi lần cập nhật chỉ thay đổi policy
+một lượng nhỏ (5 epoch $\times$ 4 mini-batch, learning rate $10^{-3}$ thích nghi theo KL).
+
+\paragraph{C. Replay buffer.} Các cặp $(s, s')$ hợp lệ của rollout được thêm vào bộ đệm FIFO
+$\mathcal{B}_\pi$ dung lượng $10^6$ (tương đương khoảng 10 iteration gần nhất).
+
+\paragraph{D. Cập nhật discriminator.} Thực hiện 5 bước Adam (learning rate $10^{-4}$), mỗi
+bước dùng 4096 cặp từ $\mathcal{D}_E$ (nhãn 1) và 4096 cặp từ $\mathcal{B}_\pi$ (nhãn 0):
+\begin{equation}
+  \mathcal{L}_D(\psi) =
+  \underbrace{-\E_{\mathcal{D}_E}\big[\log \sigma(d)\big]
+  - \E_{\mathcal{B}_\pi}\big[\log(1 - \sigma(d))\big]}_{\text{phân loại nhị phân}}
+  + \underbrace{\frac{w_\text{gp}}{2}\,\E_{\mathcal{D}_E}\big[\|\nabla_{(s,s')} d\|^2\big]}_{\text{gradient penalty},\ w_\text{gp} = 10}.
+  \label{eq:disc}
+\end{equation}
+Hai số hạng đầu đẩy $d$ lên với mẫu expert và xuống với mẫu policy. Gradient
+penalty~\cite{mescheder2018gp} giới hạn độ dốc của $d$ quanh dữ liệu expert, nhờ đó
+$r^S$ biến thiên trơn và cung cấp hướng cải thiện rõ ràng cho policy.
+
+% ---------------------------------------------------------------------------
+\subsection{Cơ sở lý thuyết}
+\textbf{GAIL.} Bước B và D cùng giải bài toán min--max~\cite{ho2016gail}
+\begin{equation}
+  \min_\pi \max_\psi \;
+  \E_{\mathcal{D}_E}\big[\log \sigma(d)\big] + \E_{\pi}\big[\log(1 - \sigma(d))\big].
+  \label{eq:gail-game}
+\end{equation}
+Với discriminator tối ưu, giá trị này tương đương divergence Jensen--Shannon giữa phân
+phối transition của policy và của expert (sai khác một hằng số); cực tiểu theo $\pi$ ---
+thực hiện bằng cách cực đại hóa $r^S$ ở \eqref{eq:gail-reward} --- kéo hai phân phối lại
+gần nhau. Báo cáo chỉ dùng phần reward của GAIL; policy được tối ưu bằng PPO thay cho
+TRPO của bài gốc, và discriminator nhận $(s, s')$ thay cho (trạng thái, hành động).
+
+\textbf{AMP.} Adversarial Motion Priors~\cite{peng2021amp} là biến thể của GAIL cho điều
+khiển chuyển động, thay \eqref{eq:disc} bằng hồi quy bình phương tối thiểu về nhãn $\pm 1$
+và dùng style reward bị chặn trong $[0, 1]$:
+\begin{equation}
+  \mathcal{L}_D^\text{AMP} = \E_{\mathcal{D}_E}\big[(d - 1)^2\big]
+  + \E_{\mathcal{B}_\pi}\big[(d + 1)^2\big] + \frac{w_\text{gp}}{2}\,
+  \E_{\mathcal{D}_E}\big[\|\nabla d\|^2\big],
+  \qquad
+  r^S_\text{AMP} = \max\big(0,\; 1 - \tfrac14 (d - 1)^2\big).
+  \label{eq:amp}
+\end{equation}
+Replay buffer, RSI và đặc trưng vị trí bàn chân, bàn tay cũng được đề xuất trong AMP.
+
+\textbf{Bão hòa.} Nếu discriminator phân biệt quá dễ ($d \ll 0$ trên dữ liệu policy) thì
+$r^S \approx 0$ và gradient của nó theo trạng thái gần bằng 0: policy mất tín hiệu style.
+Đây là chế độ thất bại chính của các cấu hình trước.
+
+% ---------------------------------------------------------------------------
+\subsection{Vai trò của từng thành phần}
+\begin{table}[H]
+\centering
+\caption{Hệ quả khi thiếu từng thành phần, quan sát được ở các cấu hình trước.}
+\label{tab:roles}
+\small
+\begin{tabular}{@{}p{3.0cm}p{6.8cm}p{3.9cm}@{}}
+\toprule
+Thành phần & Khi thiếu & Quan sát \\
+\midrule
+Kết hợp \eqref{eq:mix}, style $\approx$70\% & Style chỉ $\approx$10\% tổng reward; policy
+chủ yếu tối ưu $r^G$ và chọn dáng đi dễ nhất để đạt vận tốc (bước ngắn, lê chân) &
+GAIL v4b: 6,6 lần chạm đất/s, nhấc chân 1,4\,cm \\
+Replay buffer & Discriminator khớp quá mức với policy hiện tại và bão hòa & v5:
+$\bar d_\pi \approx -9$, $r^S \approx 0{,}01$ \\
+Không entropy bonus & Độ lệch chuẩn hành động tăng tới 3,5--5; transition nhiễu dễ bị
+phân biệt & v1 \\
+Discriminator có điều kiện & So với phân phối chuyển động gộp của mọi lệnh & v7b nhỉnh
+hơn v7a \\
+RSI & Với style $\approx$70\%, đứng yên với tư thế giống expert đã cho reward cao; policy
+xuất phát từ tư thế đứng không khám phá được chu kỳ bước chân & v7a, v7b: $v/v^* \le
+0{,}32$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+Kết hợp \eqref{eq:mix} và RSI phải đi cùng nhau: tăng tỉ trọng style mà không có RSI dẫn
+tới policy đứng yên; với RSI, policy được huấn luyện ngay từ đầu trong các pha của chu kỳ
+bước chân và chỉ cần duy trì chúng, còn style reward kéo dáng đi về phía expert.
+
+% ---------------------------------------------------------------------------
+\subsection{Giả mã}
+\begin{lstlisting}[mathescape=true]
+Thu mot lan: chay expert -> D_E (256k cap (s,s'), 83 chieu) + tap trang thai RSI
+Lap 2000 iteration:
+  A. 4096 moi truong x 24 buoc; tai moi buoc:
+       a  ~ N(mu(o), sigma^2)                     # policy
+       s' = mo phong(a)
+       rG = reward bam van toc                    # (1)
+       rS = log(1 + exp(D(s, s')))                # (2)
+       r  = 0.3*rG + 0.7*(4*0.02*rS)              # (3)
+       neu reset: 85% dat robot vao trang thai expert (RSI); bo cap (s,s')
+  B. PPO cap nhat policy va critic voi reward r
+  C. them ~98k cap (s,s') vao replay buffer (1 trieu cap moi nhat)
+  D. 5 lan: 4096 cap expert (nhan 1) + 4096 cap tu buffer (nhan 0)
+            -> buoc Adam tren loss phan loai + gradient penalty   # (5)
+\end{lstlisting}
 Policy và critic là MLP 512--256--128 (ELU); discriminator là MLP 1024--512 (ReLU).
 
 % ===========================================================================
