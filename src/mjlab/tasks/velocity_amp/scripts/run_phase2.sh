@@ -20,7 +20,7 @@ seeds=(${SEEDS:-1 2 3})
 # its own device, with one GPU both share it.
 gpus=(${GPUS:-0 0})
 
-export MUJOCO_GL=egl PYTHONUNBUFFERED=1 OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
+export MUJOCO_GL="${MUJOCO_GL:-egl}" PYTHONUNBUFFERED=1 OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MJLAB_INIT_STD=1.0 MJLAB_ENTROPY_COEF=0.0 MJLAB_AMP_LOSS=gail
 export MJLAB_AMP_DISC_UPDATES=5 MJLAB_AMP_DISC_LR=1e-4
 uv_run=(uv run --frozen --no-dev --extra cu128)
