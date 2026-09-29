@@ -16,6 +16,9 @@ iters="${MAX_ITERATIONS:-1500}"
 every="${EVAL_EVERY:-250}"
 num_envs="${NUM_ENVS:-4096}"
 seeds=(${SEEDS:-1 2 3})
+# GPUs for the two configs; with two GPUs (e.g. Kaggle 2x T4) each config gets
+# its own device, with one GPU both share it.
+gpus=(${GPUS:-0 0})
 
 export MUJOCO_GL=egl PYTHONUNBUFFERED=1 OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MJLAB_INIT_STD=1.0 MJLAB_ENTROPY_COEF=0.0 MJLAB_AMP_LOSS=gail
@@ -61,9 +64,10 @@ common=(MJLAB_AMP_EXPERT="$cond" MJLAB_AMP_STYLE_WEIGHT=4 MJLAB_AMP_TASK_LERP=0.
   MJLAB_AMP_REPLAY=1000000 MJLAB_AMP_RSI_FILE="$states" MJLAB_AMP_RSI_PROB=0.85)
 runs=()
 for s in "${seeds[@]}"; do
-  train Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond "p2-sched-s$s" "$s" "${common[@]}" &
+  train Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond "p2-sched-s$s" "$s" "${common[@]}" \
+    CUDA_VISIBLE_DEVICES="${gpus[0]}" &
   train Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond "p2-schedbc-s$s" "$s" "${common[@]}" \
-    MJLAB_AMP_BC_FILE="$bc" MJLAB_AMP_BC_STEPS=2000 &
+    MJLAB_AMP_BC_FILE="$bc" MJLAB_AMP_BC_STEPS=2000 CUDA_VISIBLE_DEVICES="${gpus[1]}" &
   runs+=("p2-sched-s$s" "p2-schedbc-s$s")
 done
 wait
