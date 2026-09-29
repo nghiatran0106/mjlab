@@ -1,9 +1,13 @@
 """Watch several checkpoints side by side in one viewer.
 
-Every policy controls its own robot(s) in the same scene and, by default, all
-robots receive the same constant velocity command, so gaits can be compared
-directly. With ``--random-commands`` the training command distribution is used
-instead (commands then differ between robots).
+Every policy controls its own robot(s) and, by default, all robots receive the
+same constant velocity command, so gaits can be compared directly. With
+``--random-commands`` the training command distribution is used instead.
+
+By default each policy gets its own view: one simulation drives all robots and
+one web viewer per policy (ports ``--port``, ``--port``+1, ...) shows only that
+policy's robot, with the camera following it. A page ``compare.html`` puts the
+views side by side. ``--single`` shows every robot in one interactive viewer.
 
 Usage (CPU is fine for a handful of robots):
   python -m mjlab.tasks.velocity_amp.scripts.compare \
@@ -11,12 +15,15 @@ Usage (CPU is fine for a handful of robots):
     --policy v4b=checkpoints/demo/gail_v4b.pt \
     --policy v7c=checkpoints/demo/gail_v7c.pt \
     --device cpu --lin-x 0.5
-Then open http://localhost:8080.
+Then open the printed compare.html (or http://localhost:8080, 8081, ...).
 """
 
 import argparse
+import time
+from pathlib import Path
 
 import torch
+import viser
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
@@ -28,6 +35,7 @@ from mjlab.tasks.velocity_amp.scripts.common import (
   load_policy,
 )
 from mjlab.viewer import ViserPlayViewer
+from mjlab.viewer.viser.scene import MjlabViserScene
 
 
 def main() -> None:
@@ -40,6 +48,9 @@ def main() -> None:
   parser.add_argument("--random-commands", action="store_true")
   parser.add_argument("--spacing", type=float, default=2.0)
   parser.add_argument("--device", type=str, default=default_device())
+  parser.add_argument("--single", action="store_true", help="all robots in one view")
+  parser.add_argument("--port", type=int, default=8080)
+  parser.add_argument("--columns", type=int, default=3)
   args = parser.parse_args()
 
   specs = [p.split("=", 1) for p in args.policy]
@@ -100,8 +111,74 @@ def main() -> None:
       actions[group] = pol(obs[group])
     return actions
 
-  ViserPlayViewer(wrapped, policy).run()
+  if args.single:
+    ViserPlayViewer(wrapped, policy).run()
+  else:
+    names = [name for name, _ in specs]
+    run_split(env, wrapped, policy, names, args)
   env.close()
+
+
+def run_split(env, wrapped, policy, names: list[str], args) -> None:
+  """One simulation, one web viewer per policy showing only its first robot."""
+  sim = env.sim
+  servers, scenes = [], []
+  for k, name in enumerate(names):
+    server = viser.ViserServer(port=args.port + k, label=name, verbose=False)
+    server.gui.add_markdown(f"**{name}**")
+    scene = MjlabViserScene(
+      server=server,
+      mj_model=sim.mj_model,
+      num_envs=env.num_envs,
+      sim_model=sim.model,
+      expanded_fields=sim.expanded_fields,
+    )
+    scene.env_idx = k * args.copies
+    scene.show_only_selected = True
+    servers.append(server)
+    scenes.append(scene)
+
+  page = write_grid_page(names, args.port, args.columns)
+  print(f"Open {page}  (or http://localhost:{args.port}..{args.port + len(names) - 1})")
+  print("Ctrl+C to stop.")
+
+  obs = wrapped.get_observations()
+  step_dt = env.step_dt
+  try:
+    while True:
+      start = time.perf_counter()
+      with torch.inference_mode():
+        obs, _, _, _ = wrapped.step(policy(obs))
+      for server, scene in zip(servers, scenes, strict=True):
+        with server.atomic():
+          scene.update(sim.data)
+        server.flush()
+      time.sleep(max(0.0, step_dt - (time.perf_counter() - start)))
+  except KeyboardInterrupt:
+    pass
+
+
+def write_grid_page(names: list[str], port: int, columns: int) -> Path:
+  cells = "\n".join(
+    f"<figure><figcaption>{name}</figcaption>"
+    f'<iframe src="http://localhost:{port + k}"></iframe></figure>'
+    for k, name in enumerate(names)
+  )
+  cols = min(columns, len(names))
+  html = f"""<!doctype html><html><head><meta charset="utf-8">
+<title>Policy comparison</title><style>
+body {{ margin: 0; background: #111; color: #eee; font-family: sans-serif; }}
+main {{ display: grid; grid-template-columns: repeat({cols}, 1fr); gap: 6px;
+       padding: 6px; height: 100vh; box-sizing: border-box; }}
+figure {{ margin: 0; display: flex; flex-direction: column; min-height: 0; }}
+figcaption {{ padding: 4px 8px; font-weight: bold; }}
+iframe {{ flex: 1; width: 100%; border: 0; }}
+</style></head><body><main>
+{cells}
+</main></body></html>"""
+  path = Path("/tmp/mjlab_compare.html")
+  path.write_text(html)
+  return path
 
 
 if __name__ == "__main__":
