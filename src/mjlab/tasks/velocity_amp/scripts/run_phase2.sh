@@ -6,8 +6,12 @@
 # from v7c and schedule the task-reward weight lambda: 0.9 for 250 iterations,
 # then linearly to 0.3 by iteration 750.
 #   - sched:    v7c + lambda schedule;
-#   - sched_bc: sched + behavior-cloning pretraining of the actor on the expert.
-# Compare iterations-to-target with v7c from phase 1 (same seeds, same protocol).
+#   - schedbc:  sched + behavior-cloning pretraining of the actor on the expert;
+#   - bc:       v7c (constant lambda = 0.3) + behavior cloning. Added after seed 1
+#               of sched/schedbc: the task-heavy start made actions jerky, while
+#               behavior cloning alone already gave an expert-like gait at start.
+# CONFIGS selects the configs (default "sched schedbc"). Compare
+# iterations-to-target with v7c from phase 1 (same seeds, same protocol).
 # Works on a fresh machine (needs checkpoints/demo/expert_step.pt).
 set -euo pipefail
 
@@ -16,9 +20,9 @@ iters="${MAX_ITERATIONS:-1500}"
 every="${EVAL_EVERY:-250}"
 num_envs="${NUM_ENVS:-4096}"
 seeds=(${SEEDS:-1 2 3})
-# GPUs for the two configs; with two GPUs (e.g. Kaggle 2x T4) each config gets
-# its own device, with one GPU both share it.
-gpus=(${GPUS:-0 0})
+configs=(${CONFIGS:-sched schedbc})
+# Runs are assigned to these GPUs round-robin (e.g. GPUS="0 1" on Kaggle 2x T4).
+gpus=(${GPUS:-0})
 
 export MUJOCO_GL="${MUJOCO_GL:-egl}" PYTHONUNBUFFERED=1 OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MJLAB_INIT_STD=1.0 MJLAB_ENTROPY_COEF=0.0 MJLAB_AMP_LOSS=gail
@@ -58,25 +62,35 @@ collect Mjlab-Velocity-Flat-Unitree-G1-Expert "$base"
 collect Mjlab-Velocity-Flat-Unitree-G1-Expert-Cond "$cond" --states-out "$states" \
   --bc-out "$bc"
 
-echo "== training: {sched, sched_bc} x ${#seeds[@]} seeds, $iters iterations =="
+echo "== training: ${configs[*]} x seeds ${seeds[*]}, $iters iterations =="
 common=(MJLAB_AMP_EXPERT="$cond" MJLAB_AMP_STYLE_WEIGHT=4 MJLAB_AMP_TASK_LERP=0.3
-  MJLAB_AMP_LERP_START=0.9 MJLAB_AMP_LERP_HOLD=250 MJLAB_AMP_LERP_RAMP=500
   MJLAB_AMP_REPLAY=1000000 MJLAB_AMP_RSI_FILE="$states" MJLAB_AMP_RSI_PROB=0.85)
+schedule=(MJLAB_AMP_LERP_START=0.9 MJLAB_AMP_LERP_HOLD=250 MJLAB_AMP_LERP_RAMP=500)
+cloning=(MJLAB_AMP_BC_FILE="$bc" MJLAB_AMP_BC_STEPS=2000)
 runs=()
+n=0
 for s in "${seeds[@]}"; do
-  train Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond "p2-sched-s$s" "$s" "${common[@]}" \
-    CUDA_VISIBLE_DEVICES="${gpus[0]}" &
-  train Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond "p2-schedbc-s$s" "$s" "${common[@]}" \
-    MJLAB_AMP_BC_FILE="$bc" MJLAB_AMP_BC_STEPS=2000 CUDA_VISIBLE_DEVICES="${gpus[1]}" &
-  runs+=("p2-sched-s$s" "p2-schedbc-s$s")
+  for c in "${configs[@]}"; do
+    case "$c" in
+      sched) extra=("${schedule[@]}") ;;
+      schedbc) extra=("${schedule[@]}" "${cloning[@]}") ;;
+      bc) extra=("${cloning[@]}") ;;
+      *) echo "unknown config: $c" >&2; exit 2 ;;
+    esac
+    gpu="${gpus[$((n % ${#gpus[@]}))]}"
+    train Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond "p2-$c-s$s" "$s" "${common[@]}" \
+      "${extra[@]}" CUDA_VISIBLE_DEVICES="$gpu" &
+    runs+=("p2-$c-s$s")
+    n=$((n + 1))
+  done
 done
 wait
 
 echo "== evaluation of every checkpoint =="
 policies=(--policy "expert_step=$expert")
 for r in "${runs[@]}"; do
-  name="${r#p2-}"            # sched-s1 / schedbc-s1
-  config="${name%-s*}"       # sched / schedbc
+  name="${r#p2-}"            # sched-s1 / schedbc-s1 / bc-s1
+  config="${name%-s*}"       # sched / schedbc / bc
   seed="${name##*-s}"
   d="$(run_dir "$r")"
   for ((it = every; it <= iters; it += every)); do
