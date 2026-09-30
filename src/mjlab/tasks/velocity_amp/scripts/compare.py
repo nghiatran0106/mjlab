@@ -7,7 +7,9 @@ same constant velocity command, so gaits can be compared directly. With
 By default each policy gets its own view: one simulation drives all robots and
 one web viewer per policy (ports ``--port``, ``--port``+1, ...) shows only that
 policy's robot, with the camera following it. A page ``compare.html`` puts the
-views side by side. ``--single`` shows every robot in one interactive viewer.
+views side by side. Every view has a "Policy" dropdown to switch to any loaded
+policy, so many checkpoints can be loaded and a few views (``--views``) used to
+pick among them. ``--single`` shows every robot in one interactive viewer.
 
 Usage (CPU is fine for a handful of robots):
   python -m mjlab.tasks.velocity_amp.scripts.compare \
@@ -51,6 +53,9 @@ def main() -> None:
   parser.add_argument("--single", action="store_true", help="all robots in one view")
   parser.add_argument("--port", type=int, default=8080)
   parser.add_argument("--columns", type=int, default=3)
+  parser.add_argument(
+    "--views", type=int, default=0, help="number of views (default: one per policy)"
+  )
   args = parser.parse_args()
 
   specs = [p.split("=", 1) for p in args.policy]
@@ -120,12 +125,13 @@ def main() -> None:
 
 
 def run_split(env, wrapped, policy, names: list[str], args) -> None:
-  """One simulation, one web viewer per policy showing only its first robot."""
+  """One simulation, several web viewers; each shows the first robot of the
+  policy selected in its dropdown (initially policy k for view k)."""
   sim = env.sim
+  num_views = args.views if args.views > 0 else len(names)
   servers, scenes = [], []
-  for k, name in enumerate(names):
-    server = viser.ViserServer(port=args.port + k, label=name, verbose=False)
-    server.gui.add_markdown(f"**{name}**")
+  for k in range(num_views):
+    server = viser.ViserServer(port=args.port + k, label=f"view {k}", verbose=False)
     scene = MjlabViserScene(
       server=server,
       mj_model=sim.mj_model,
@@ -133,13 +139,15 @@ def run_split(env, wrapped, policy, names: list[str], args) -> None:
       sim_model=sim.model,
       expanded_fields=sim.expanded_fields,
     )
-    scene.env_idx = k * args.copies
+    scene.env_idx = (k % len(names)) * args.copies
     scene.show_only_selected = True
+    add_policy_selector(server, scene, names, k % len(names), args.copies)
     servers.append(server)
     scenes.append(scene)
 
-  page = write_grid_page(names, args.port, args.columns)
-  print(f"Open {page}  (or http://localhost:{args.port}..{args.port + len(names) - 1})")
+  page = write_grid_page(num_views, args.port, args.columns)
+  last = args.port + num_views - 1
+  print(f"Open {page}  (or http://localhost:{args.port}..{last})")
   print("Ctrl+C to stop.")
 
   obs = wrapped.get_observations()
@@ -158,20 +166,34 @@ def run_split(env, wrapped, policy, names: list[str], args) -> None:
     pass
 
 
-def write_grid_page(names: list[str], port: int, columns: int) -> Path:
-  cells = "\n".join(
-    f"<figure><figcaption>{name}</figcaption>"
-    f'<iframe src="http://localhost:{port + k}"></iframe></figure>'
-    for k, name in enumerate(names)
+def add_policy_selector(
+  server: viser.ViserServer,
+  scene: MjlabViserScene,
+  names: list[str],
+  initial: int,
+  copies: int,
+) -> None:
+  dropdown = server.gui.add_dropdown(
+    "Policy", tuple(names), initial_value=names[initial]
   )
-  cols = min(columns, len(names))
+
+  @dropdown.on_update
+  def _(_) -> None:
+    scene.env_idx = names.index(dropdown.value) * copies
+
+
+def write_grid_page(num_views: int, port: int, columns: int) -> Path:
+  cells = "\n".join(
+    f'<figure><iframe src="http://localhost:{port + k}"></iframe></figure>'
+    for k in range(num_views)
+  )
+  cols = min(columns, num_views)
   html = f"""<!doctype html><html><head><meta charset="utf-8">
 <title>Policy comparison</title><style>
 body {{ margin: 0; background: #111; color: #eee; font-family: sans-serif; }}
 main {{ display: grid; grid-template-columns: repeat({cols}, 1fr); gap: 6px;
        padding: 6px; height: 100vh; box-sizing: border-box; }}
 figure {{ margin: 0; display: flex; flex-direction: column; min-height: 0; }}
-figcaption {{ padding: 4px 8px; font-weight: bold; }}
 iframe {{ flex: 1; width: 100%; border: 0; }}
 </style></head><body><main>
 {cells}
