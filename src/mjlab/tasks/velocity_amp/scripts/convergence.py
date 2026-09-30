@@ -9,9 +9,14 @@ close to the expert:
   - swing peak >= MIN_LIFT_CM,
   - pelvis down (crawling) <= MAX_DOWN of the time, falls <= MAX_FALLS per minute.
 
+With ``--reference-config`` (used for robot variants, where the nominal expert
+is no longer the right yardstick) the target is relative to the converged
+checkpoints of that config instead: true reward >= MIN_REWARD_FRAC and swing
+peak >= MIN_LIFT_FRAC of their mean, tracking error <= their mean + LIN_ERR_MARGIN.
+
 Usage:
   python -m mjlab.tasks.velocity_amp.scripts.convergence results.json \
-    [--expert expert_step] [--out summary.json]
+    [--expert expert_step | --reference-config ppo] [--out summary.json]
 """
 
 import argparse
@@ -26,32 +31,51 @@ MIN_REWARD_FRAC = 0.90
 MIN_LIFT_CM = 5.0
 MAX_DOWN = 0.01
 MAX_FALLS = 0.1
+MIN_LIFT_FRAC = 0.8
+LIN_ERR_MARGIN = 0.05
 
 _NAME = re.compile(r"^(?P<config>.+)_s(?P<seed>\d+)_it(?P<it>\d+)$")
 
 
-def meets_target(r: dict, expert_reward: float) -> bool:
+def meets_target(r: dict, ref: dict) -> bool:
   return (
-    r["lin_vel_error_m_s"] <= MAX_LIN_ERR
-    and r["true_reward_rate"] >= MIN_REWARD_FRAC * expert_reward
-    and r["swing_peak_cm"] >= MIN_LIFT_CM
+    r["lin_vel_error_m_s"] <= ref["max_lin_err"]
+    and r["true_reward_rate"] >= MIN_REWARD_FRAC * ref["reward"]
+    and r["swing_peak_cm"] >= ref["min_lift"]
     and r["down_fraction"] <= MAX_DOWN
     and r["falls_per_minute"] <= MAX_FALLS
   )
 
 
-def summarize(results: dict, expert: str) -> dict:
-  expert_reward = results[expert]["true_reward_rate"]
+def summarize(results: dict, expert: str, reference_config: str | None = None) -> dict:
   runs: dict[tuple[str, int], dict[int, dict]] = defaultdict(dict)
   for name, r in results.items():
     m = _NAME.match(name)
     if m:
       runs[(m["config"], int(m["seed"]))][int(m["it"])] = r
 
+  if reference_config is None:
+    ref = {
+      "reward": results[expert]["true_reward_rate"],
+      "max_lin_err": MAX_LIN_ERR,
+      "min_lift": MIN_LIFT_CM,
+    }
+  else:
+    finals = [c[max(c)] for (cfg, _), c in runs.items() if cfg == reference_config]
+    if not finals:
+      raise ValueError(f"no runs of reference config {reference_config!r}")
+    mean = lambda k: sum(r[k] for r in finals) / len(finals)  # noqa: E731
+    ref = {
+      "reward": mean("true_reward_rate"),
+      "max_lin_err": mean("lin_vel_error_m_s") + LIN_ERR_MARGIN,
+      "min_lift": MIN_LIFT_FRAC * mean("swing_peak_cm"),
+    }
+  expert_reward = ref["reward"]
+
   per_run = {}
   for (config, seed), ckpts in sorted(runs.items()):
     iters = sorted(ckpts)
-    hit = next((it for it in iters if meets_target(ckpts[it], expert_reward)), None)
+    hit = next((it for it in iters if meets_target(ckpts[it], ref)), None)
     last = ckpts[iters[-1]]
     per_run[f"{config}_s{seed}"] = {
       "config": config,
@@ -77,7 +101,7 @@ def summarize(results: dict, expert: str) -> dict:
       "final_reward_frac_mean": sum(fracs) / len(fracs),
       "final_reward_frac_std": _std(fracs),
     }
-  return {"expert": expert, "per_run": per_run, "per_config": per_config}
+  return {"reference": ref, "per_run": per_run, "per_config": per_config}
 
 
 def _std(xs: list[float]) -> float:
@@ -91,12 +115,15 @@ def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument("results", type=Path)
   parser.add_argument("--expert", default="expert_step")
+  parser.add_argument("--reference-config", default=None)
   parser.add_argument("--out", type=Path, default=None)
   args = parser.parse_args()
-  summary = summarize(json.loads(args.results.read_text()), args.expert)
+  summary = summarize(
+    json.loads(args.results.read_text()), args.expert, args.reference_config
+  )
   print(
     "| config | seeds reached | iterations to target (each seed) "
-    "| final reward / expert |"
+    "| final reward / reference |"
   )
   print("|---|---|---|---|")
   for config, c in summary["per_config"].items():

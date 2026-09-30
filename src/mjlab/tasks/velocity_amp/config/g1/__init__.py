@@ -6,6 +6,8 @@ from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 from mjlab.tasks.velocity_amp.rl import AmpOnPolicyRunner, TaskOnlyOnPolicyRunner
 
 from .env_cfgs import (
+  VARIANTS,
+  apply_variant,
   unitree_g1_flat_amp_cond_env_cfg,
   unitree_g1_flat_amp_env_cfg,
   unitree_g1_flat_expert_cond_env_cfg,
@@ -115,3 +117,36 @@ register_mjlab_task(
   rl_cfg=unitree_g1_ppo_runner_cfg(),
   runner_cls=VelocityOnPolicyRunner,
 )
+
+# Reuse experiment: every variant gets the PPO baseline (hand-written reward),
+# the conditional AMP/GAIL task and an evaluation task, e.g.
+# Mjlab-Velocity-Flat-Unitree-G1-ExpertStep-Payload.
+for _variant in VARIANTS:
+  _suffix = _variant.capitalize()
+  register_mjlab_task(
+    task_id=f"Mjlab-Velocity-Flat-Unitree-G1-ExpertStep-{_suffix}",
+    env_cfg=apply_variant(unitree_g1_flat_expert_gait_env_cfg(), _variant),
+    play_env_cfg=apply_variant(
+      unitree_g1_flat_expert_gait_env_cfg(play=True), _variant
+    ),
+    rl_cfg=replace(
+      unitree_g1_ppo_runner_cfg(), experiment_name=f"g1_velocity_{_variant}_ppo"
+    ),
+    runner_cls=VelocityOnPolicyRunner,
+  )
+  register_mjlab_task(
+    task_id=f"Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond-{_suffix}",
+    env_cfg=apply_variant(unitree_g1_flat_amp_cond_env_cfg(), _variant),
+    play_env_cfg=apply_variant(unitree_g1_flat_amp_cond_env_cfg(play=True), _variant),
+    rl_cfg=replace(
+      unitree_g1_ppo_runner_cfg(), experiment_name=f"g1_velocity_{_variant}_amp"
+    ),
+    runner_cls=AmpOnPolicyRunner,
+  )
+  register_mjlab_task(
+    task_id=f"Mjlab-Velocity-Flat-Unitree-G1-Expert-{_suffix}",
+    env_cfg=apply_variant(unitree_g1_flat_expert_env_cfg(), _variant),
+    play_env_cfg=apply_variant(unitree_g1_flat_expert_env_cfg(play=True), _variant),
+    rl_cfg=unitree_g1_ppo_runner_cfg(),
+    runner_cls=VelocityOnPolicyRunner,
+  )

@@ -1,7 +1,9 @@
 """G1 flat velocity configs for the task-only and AMP experiments."""
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.envs.mdp import dr
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.tasks.velocity_amp.mdp import (
@@ -109,4 +111,43 @@ def unitree_g1_flat_expert_cond_env_cfg(play: bool = False) -> ManagerBasedRlEnv
   """Original rewards with the conditional features (expert data)."""
   cfg = unitree_g1_flat_expert_env_cfg(play=play)
   cfg.observations["amp"] = _conditional_group()
+  return cfg
+
+
+# Robot variants for the reuse experiment: the expert data always comes from the
+# nominal robot, and each variant is learned either from scratch with the
+# hand-written reward (PPO baseline) or from the nominal demonstrations.
+VARIANTS = ("payload", "weak", "slippery")
+
+
+def apply_variant(cfg: ManagerBasedRlEnvCfg, variant: str) -> ManagerBasedRlEnvCfg:
+  """Change the robot or ground dynamics of ``cfg`` in place."""
+  if variant == "payload":
+    # 6 kg point mass on the torso (about +17% of the robot mass).
+    cfg.events["variant_payload"] = EventTermCfg(
+      func=dr.body_mass,
+      mode="startup",
+      params={
+        "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+        "operation": "add",
+        "ranges": (6.0, 6.0),
+      },
+    )
+  elif variant == "weak":
+    # Softer actuation: PD gains at 70%.
+    cfg.events["variant_weak"] = EventTermCfg(
+      func=dr.pd_gains,
+      mode="startup",
+      params={
+        "asset_cfg": SceneEntityCfg("robot"),
+        "kp_range": (0.7, 0.7),
+        "kd_range": (0.7, 0.7),
+        "operation": "scale",
+      },
+    )
+  elif variant == "slippery":
+    # Low foot friction (nominal range 0.3-1.2).
+    cfg.events["foot_friction"].params["ranges"] = (0.15, 0.35)
+  else:
+    raise ValueError(f"unknown variant: {variant}")
   return cfg

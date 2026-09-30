@@ -23,6 +23,7 @@ import torch
 
 from mjlab.tasks.velocity import mdp as velocity_mdp
 from mjlab.tasks.velocity_amp.scripts.common import (
+  EXPERT_TASK,
   default_device,
   load_policy,
   make_env,
@@ -52,7 +53,9 @@ def subsample(x: torch.Tensor, n: int = 200_000) -> torch.Tensor:
 
 
 def evaluate(checkpoint: str, args: argparse.Namespace, expert: torch.Tensor) -> dict:
-  env, wrapped = make_env(args.num_envs, args.seed, args.device, pushes=False)
+  env, wrapped = make_env(
+    args.num_envs, args.seed, args.device, pushes=False, task=args.task
+  )
   policy = load_policy(wrapped, checkpoint, args.device)
   robot = env.scene["robot"]
   terms = env.reward_manager.active_terms
@@ -133,6 +136,12 @@ def main() -> None:
   parser.add_argument("--steps", type=int, default=1000)
   parser.add_argument("--seed", type=int, default=123)
   parser.add_argument("--device", type=str, default=default_device())
+  parser.add_argument(
+    "--task",
+    type=str,
+    default=EXPERT_TASK,
+    help="evaluation task (hand-written reward + AMP features), e.g. a variant",
+  )
   args = parser.parse_args()
 
   expert = torch.as_tensor(np.load(args.expert_file)["s"], device=args.device)

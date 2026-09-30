@@ -45,6 +45,20 @@ def test_convergence_reports_first_checkpoint_meeting_target():
   assert cfg["iterations_to_target_all"] == [500, None]
 
 
+def test_convergence_relative_to_reference_config():
+  # Robot variant: the target comes from the converged PPO runs, not the expert.
+  results = {
+    "ppo_s1_it500": _metrics(2.0, 0.40, 2.0),
+    "ppo_s1_it1000": _metrics(4.0, 0.20, 6.0),
+    "ppo_s2_it1000": _metrics(4.4, 0.20, 6.0),  # reference: 4.2, 0.20, 6.0
+    "bc_s1_it250": _metrics(3.9, 0.24, 5.0),  # 0.9 * 4.2 = 3.78, 0.8 * 6 = 4.8
+  }
+  summary = summarize(results, expert="unused", reference_config="ppo")
+  assert summary["reference"]["reward"] == pytest.approx(4.2)
+  assert summary["per_run"]["bc_s1"]["iterations_to_target"] == 250
+  assert summary["per_run"]["ppo_s1"]["iterations_to_target"] == 1000
+
+
 @pytest.mark.parametrize("loss_type", ["amp", "gail"])
 def test_discriminator_separates_expert_from_policy(loss_type):
   torch.manual_seed(0)

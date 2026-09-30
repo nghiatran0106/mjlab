@@ -19,6 +19,12 @@
 # With TIMING=1 (default) every config in TIMING_CONFIGS (default: CONFIGS) is
 # also timed alone on one GPU for TIMING_ITERS iterations, so seconds per
 # iteration are comparable across configs.
+# VARIANT=payload|weak|slippery runs the reuse experiment instead: the configs
+# are trained on that robot variant (6 kg torso payload, PD gains at 70%, low
+# foot friction) while the demonstrations still come from the nominal expert.
+# Iterations-to-target are then measured against the converged "ppo" runs on
+# the same variant (convergence.py --reference-config ppo), so CONFIGS must
+# include ppo, e.g. VARIANT=payload CONFIGS="ppo bc".
 # Works on a fresh machine (needs checkpoints/demo/expert_step.pt).
 set -euo pipefail
 
@@ -33,6 +39,14 @@ gpus=(${GPUS:-0})
 timing="${TIMING:-1}"
 timing_iters="${TIMING_ITERS:-60}"
 timing_configs=(${TIMING_CONFIGS:-${configs[*]}})
+variant="${VARIANT:-}"
+if [[ -n "$variant" ]]; then
+  suffix="-${variant^}"         # e.g. -Payload
+  tag="variant-$variant"        # run names and output files
+  reference=(--reference-config ppo)
+else
+  suffix="" tag="phase2" reference=()
+fi
 
 export MUJOCO_GL="${MUJOCO_GL:-egl}" PYTHONUNBUFFERED=1 OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MJLAB_INIT_STD=1.0 MJLAB_ENTROPY_COEF=0.0 MJLAB_AMP_LOSS=gail
@@ -72,7 +86,7 @@ collect Mjlab-Velocity-Flat-Unitree-G1-Expert "$base"
 collect Mjlab-Velocity-Flat-Unitree-G1-Expert-Cond "$cond" --states-out "$states" \
   --bc-out "$bc"
 
-echo "== training: ${configs[*]} x seeds ${seeds[*]}, $iters iterations =="
+echo "== training ($tag): ${configs[*]} x seeds ${seeds[*]}, $iters iterations =="
 common=(MJLAB_AMP_EXPERT="$cond" MJLAB_AMP_STYLE_WEIGHT=4 MJLAB_AMP_TASK_LERP=0.3
   MJLAB_AMP_REPLAY=1000000 MJLAB_AMP_RSI_FILE="$states" MJLAB_AMP_RSI_PROB=0.85)
 schedule=(MJLAB_AMP_LERP_START=0.9 MJLAB_AMP_LERP_HOLD=250 MJLAB_AMP_LERP_RAMP=500)
@@ -80,8 +94,8 @@ cloning=(MJLAB_AMP_BC_FILE="$bc" MJLAB_AMP_BC_STEPS=2000)
 
 config_task() {  # config_task <config>
   case "$1" in
-    ppo) echo Mjlab-Velocity-Flat-Unitree-G1-ExpertStep ;;
-    *) echo Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond ;;
+    ppo) echo "Mjlab-Velocity-Flat-Unitree-G1-ExpertStep$suffix" ;;
+    *) echo "Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond$suffix" ;;
   esac
 }
 
@@ -103,9 +117,9 @@ for s in "${seeds[@]}"; do
   for c in "${configs[@]}"; do
     config_env "$c"
     gpu="${gpus[$((n % ${#gpus[@]}))]}"
-    train "$(config_task "$c")" "p2-$c-s$s" "$s" "${extra[@]}" \
+    train "$(config_task "$c")" "$tag-$c-s$s" "$s" "${extra[@]}" \
       CUDA_VISIBLE_DEVICES="$gpu" &
-    runs+=("p2-$c-s$s")
+    runs+=("$tag-$c-s$s")
     n=$((n + 1))
   done
 done
@@ -114,7 +128,7 @@ wait
 echo "== evaluation of every checkpoint =="
 policies=(--policy "expert_step=$expert")
 for r in "${runs[@]}"; do
-  name="${r#p2-}"            # e.g. bc-s1
+  name="${r#"$tag"-}"        # e.g. bc-s1
   config="${name%-s*}"       # e.g. bc
   seed="${name##*-s}"
   d="$(run_dir "$r")"
@@ -124,13 +138,15 @@ for r in "${runs[@]}"; do
     [[ -f "$ckpt" ]] && policies+=(--policy "${config}_s${seed}_it${it}=$ckpt")
   done
 done
+# On a variant, the nominal expert is evaluated there too (zero-shot transfer).
 "${uv_run[@]}" python -m mjlab.tasks.velocity_amp.scripts.evaluate \
+  --task "Mjlab-Velocity-Flat-Unitree-G1-Expert$suffix" \
   --expert-file "$base" "${policies[@]}" \
-  --out "logs/amp_eval/results-phase2-$stamp.json" \
-  > "logs/amp_console/eval-phase2-$stamp.log" 2>&1
+  --out "logs/amp_eval/results-$tag-$stamp.json" \
+  > "logs/amp_console/eval-$tag-$stamp.log" 2>&1
 "${uv_run[@]}" python -m mjlab.tasks.velocity_amp.scripts.convergence \
-  "logs/amp_eval/results-phase2-$stamp.json" \
-  --out "logs/amp_eval/convergence-phase2-$stamp.json" | tee "logs/phase2_summary.md"
+  "logs/amp_eval/results-$tag-$stamp.json" "${reference[@]}" \
+  --out "logs/amp_eval/convergence-$tag-$stamp.json" | tee "logs/${tag}_summary.md"
 
 if [[ "$timing" == 1 ]]; then
   echo "== timing: each config alone on one GPU, $timing_iters iterations =="
@@ -144,7 +160,8 @@ if [[ "$timing" == 1 ]]; then
         "$(config_task "$c")" --gpu-ids '[0]' --env.scene.num-envs "$num_envs" \
         --agent.max-iterations "$timing_iters" --agent.save-interval 100000 \
         --agent.logger tensorboard --agent.upload-model False \
-        --agent.run-name "timing-$c" > "logs/amp_console/timing-$c-$stamp.log" 2>&1
+        --agent.run-name "timing-$tag-$c" \
+        > "logs/amp_console/timing-$c-$stamp.log" 2>&1
       # Median over the second half (the first iterations include compilation).
       t=$(sed 's/\x1b\[[0-9;]*m//g' "logs/amp_console/timing-$c-$stamp.log" \
         | grep -oE "Iteration time: [0-9.]+" | awk '{print $3}' \
@@ -152,17 +169,17 @@ if [[ "$timing" == 1 ]]; then
         | awk '{a[NR]=$1} END {if (NR) print a[int((NR + 1) / 2)]; else print "n/a"}')
       echo "| $c | $t |"
     done
-  } | tee -a "logs/phase2_summary.md"
+  } | tee -a "logs/${tag}_summary.md"
 fi
 
 # Small bundle for a slow link: results, summary, logs, TensorBoard events and
 # the final checkpoint of each run.
-files=("logs/amp_eval/results-phase2-$stamp.json" "logs/amp_eval/convergence-phase2-$stamp.json"
-  logs/phase2_summary.md logs/amp_console/*-"$stamp".log)
+files=("logs/amp_eval/results-$tag-$stamp.json" "logs/amp_eval/convergence-$tag-$stamp.json"
+  "logs/${tag}_summary.md" logs/amp_console/*-"$stamp".log)
 for r in "${runs[@]}"; do
   d="$(run_dir "$r")"
   files+=("$d"/events.out.* "$(ls -t "$d"/model_*.pt | head -1)")
 done
-tar czf "logs/phase2_results-$stamp.tgz" "${files[@]}"
-ls -la "logs/phase2_results-$stamp.tgz"
-echo "Done phase 2."
+tar czf "logs/${tag}_results-$stamp.tgz" "${files[@]}"
+ls -la "logs/${tag}_results-$stamp.tgz"
+echo "Done $tag."
