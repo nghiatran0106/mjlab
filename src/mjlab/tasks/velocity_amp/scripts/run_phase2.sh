@@ -22,6 +22,11 @@
 #               does not undo the cloned policy in the first ~150 iterations;
 #   - bcrsw:    bcrs + 25 iterations that update only the critic (it starts random
 #               after behavior cloning).
+#   - bcrs1, bcrs2: bcrs with a lighter action-rate penalty (-0.03 and -0.06 after
+#               the task weight instead of -0.1). bcrs reached 98.6% of the expert
+#               reward, but its actions were smoother than the expert's and its
+#               tracking error fell slowly; -0.03 keeps the penalty-to-task ratio
+#               of the hand-written reward.
 # CONFIGS selects the configs (default "sched schedbc"). Compare
 # iterations-to-target with v7c from phase 1 (same seeds, same protocol).
 # With TIMING=1 (default) every config in TIMING_CONFIGS (default: CONFIGS) is
@@ -116,6 +121,10 @@ config_env() {  # config_env <config> -> sets the array "extra"
     bc) extra=("${common[@]}" "${cloning[@]}") ;;
     bcr) extra=("${common[@]}" "${cloning[@]}" "${smooth[@]}") ;;
     bcrs) extra=("${common[@]}" "${cloning[@]}" "${smooth[@]}" MJLAB_INIT_STD=0.3) ;;
+    bcrs1) extra=("${common[@]}" "${cloning[@]}" MJLAB_AMP_ACTION_RATE=-0.1
+      MJLAB_INIT_STD=0.3) ;;
+    bcrs2) extra=("${common[@]}" "${cloning[@]}" MJLAB_AMP_ACTION_RATE=-0.2
+      MJLAB_INIT_STD=0.3) ;;
     bcrsw) extra=("${common[@]}" "${cloning[@]}" "${smooth[@]}" MJLAB_INIT_STD=0.3
       MJLAB_AMP_CRITIC_WARMUP=25) ;;
     bctask) extra=("${common[@]}" "${cloning[@]}" MJLAB_AMP_STYLE_WEIGHT=0) ;;
