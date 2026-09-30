@@ -10,8 +10,15 @@
 #   - bc:       v7c (constant lambda = 0.3) + behavior cloning. Added after seed 1
 #               of sched/schedbc: the task-heavy start made actions jerky, while
 #               behavior cloning alone already gave an expert-like gait at start.
+#   - ppo:      baseline, standard PPO with the 14 hand-written reward terms trained
+#               from scratch (the ExpertStep config that produced the expert);
+#   - bctask:   bc without the GAIL style reward (task reward only), to separate
+#               the contribution of GAIL from that of behavior cloning.
 # CONFIGS selects the configs (default "sched schedbc"). Compare
 # iterations-to-target with v7c from phase 1 (same seeds, same protocol).
+# With TIMING=1 (default) every config in TIMING_CONFIGS (default: CONFIGS) is
+# also timed alone on one GPU for TIMING_ITERS iterations, so seconds per
+# iteration are comparable across configs.
 # Works on a fresh machine (needs checkpoints/demo/expert_step.pt).
 set -euo pipefail
 
@@ -23,6 +30,9 @@ seeds=(${SEEDS:-1 2 3})
 configs=(${CONFIGS:-sched schedbc})
 # Runs are assigned to these GPUs round-robin (e.g. GPUS="0 1" on Kaggle 2x T4).
 gpus=(${GPUS:-0})
+timing="${TIMING:-1}"
+timing_iters="${TIMING_ITERS:-60}"
+timing_configs=(${TIMING_CONFIGS:-${configs[*]}})
 
 export MUJOCO_GL="${MUJOCO_GL:-egl}" PYTHONUNBUFFERED=1 OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MJLAB_INIT_STD=1.0 MJLAB_ENTROPY_COEF=0.0 MJLAB_AMP_LOSS=gail
@@ -55,7 +65,7 @@ train() {  # train <task> <run-name> <seed> [env assignments...]
     --agent.run-name "$2" > "logs/amp_console/$2-$stamp.log" 2>&1
 }
 
-run_dir() { ls -td logs/rsl_rl/g1_velocity_amp/*_"$1" | head -1; }
+run_dir() { ls -td logs/rsl_rl/*/*_"$1" | head -1; }
 
 echo "== expert data =="
 collect Mjlab-Velocity-Flat-Unitree-G1-Expert "$base"
@@ -67,19 +77,34 @@ common=(MJLAB_AMP_EXPERT="$cond" MJLAB_AMP_STYLE_WEIGHT=4 MJLAB_AMP_TASK_LERP=0.
   MJLAB_AMP_REPLAY=1000000 MJLAB_AMP_RSI_FILE="$states" MJLAB_AMP_RSI_PROB=0.85)
 schedule=(MJLAB_AMP_LERP_START=0.9 MJLAB_AMP_LERP_HOLD=250 MJLAB_AMP_LERP_RAMP=500)
 cloning=(MJLAB_AMP_BC_FILE="$bc" MJLAB_AMP_BC_STEPS=2000)
+
+config_task() {  # config_task <config>
+  case "$1" in
+    ppo) echo Mjlab-Velocity-Flat-Unitree-G1-ExpertStep ;;
+    *) echo Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond ;;
+  esac
+}
+
+config_env() {  # config_env <config> -> sets the array "extra"
+  case "$1" in
+    sched) extra=("${common[@]}" "${schedule[@]}") ;;
+    schedbc) extra=("${common[@]}" "${schedule[@]}" "${cloning[@]}") ;;
+    v7c) extra=("${common[@]}") ;;
+    bc) extra=("${common[@]}" "${cloning[@]}") ;;
+    bctask) extra=("${common[@]}" "${cloning[@]}" MJLAB_AMP_STYLE_WEIGHT=0) ;;
+    ppo) extra=(MJLAB_UNUSED=1) ;;  # stock runner: none of the AMP settings apply
+    *) echo "unknown config: $1" >&2; exit 2 ;;
+  esac
+}
+
 runs=()
 n=0
 for s in "${seeds[@]}"; do
   for c in "${configs[@]}"; do
-    case "$c" in
-      sched) extra=("${schedule[@]}") ;;
-      schedbc) extra=("${schedule[@]}" "${cloning[@]}") ;;
-      bc) extra=("${cloning[@]}") ;;
-      *) echo "unknown config: $c" >&2; exit 2 ;;
-    esac
+    config_env "$c"
     gpu="${gpus[$((n % ${#gpus[@]}))]}"
-    train Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond "p2-$c-s$s" "$s" "${common[@]}" \
-      "${extra[@]}" CUDA_VISIBLE_DEVICES="$gpu" &
+    train "$(config_task "$c")" "p2-$c-s$s" "$s" "${extra[@]}" \
+      CUDA_VISIBLE_DEVICES="$gpu" &
     runs+=("p2-$c-s$s")
     n=$((n + 1))
   done
@@ -89,8 +114,8 @@ wait
 echo "== evaluation of every checkpoint =="
 policies=(--policy "expert_step=$expert")
 for r in "${runs[@]}"; do
-  name="${r#p2-}"            # sched-s1 / schedbc-s1 / bc-s1
-  config="${name%-s*}"       # sched / schedbc / bc
+  name="${r#p2-}"            # e.g. bc-s1
+  config="${name%-s*}"       # e.g. bc
   seed="${name##*-s}"
   d="$(run_dir "$r")"
   for ((it = every; it <= iters; it += every)); do
@@ -106,6 +131,29 @@ done
 "${uv_run[@]}" python -m mjlab.tasks.velocity_amp.scripts.convergence \
   "logs/amp_eval/results-phase2-$stamp.json" \
   --out "logs/amp_eval/convergence-phase2-$stamp.json" | tee "logs/phase2_summary.md"
+
+if [[ "$timing" == 1 ]]; then
+  echo "== timing: each config alone on one GPU, $timing_iters iterations =="
+  {
+    echo
+    echo "| config | seconds / iteration (alone on one GPU) |"
+    echo "|---|---|"
+    for c in "${timing_configs[@]}"; do
+      config_env "$c"
+      env "${extra[@]}" CUDA_VISIBLE_DEVICES="${gpus[0]}" "${uv_run[@]}" train \
+        "$(config_task "$c")" --gpu-ids '[0]' --env.scene.num-envs "$num_envs" \
+        --agent.max-iterations "$timing_iters" --agent.save-interval 100000 \
+        --agent.logger tensorboard --agent.upload-model False \
+        --agent.run-name "timing-$c" > "logs/amp_console/timing-$c-$stamp.log" 2>&1
+      # Median over the second half (the first iterations include compilation).
+      t=$(sed 's/\x1b\[[0-9;]*m//g' "logs/amp_console/timing-$c-$stamp.log" \
+        | grep -oE "Iteration time: [0-9.]+" | awk '{print $3}' \
+        | tail -n $((timing_iters / 2)) | sort -n \
+        | awk '{a[NR]=$1} END {if (NR) print a[int((NR + 1) / 2)]; else print "n/a"}')
+      echo "| $c | $t |"
+    done
+  } | tee -a "logs/phase2_summary.md"
+fi
 
 # Small bundle for a slow link: results, summary, logs, TensorBoard events and
 # the final checkpoint of each run.
