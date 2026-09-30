@@ -40,14 +40,19 @@ _NAME = re.compile(r"^(?P<config>.+)_s(?P<seed>\d+)_it(?P<it>\d+)$")
 def meets_target(r: dict, ref: dict) -> bool:
   return (
     r["lin_vel_error_m_s"] <= ref["max_lin_err"]
-    and r["true_reward_rate"] >= MIN_REWARD_FRAC * ref["reward"]
+    and r["true_reward_rate"] >= ref["min_reward_frac"] * ref["reward"]
     and r["swing_peak_cm"] >= ref["min_lift"]
     and r["down_fraction"] <= MAX_DOWN
     and r["falls_per_minute"] <= MAX_FALLS
   )
 
 
-def summarize(results: dict, expert: str, reference_config: str | None = None) -> dict:
+def summarize(
+  results: dict,
+  expert: str,
+  reference_config: str | None = None,
+  min_reward_frac: float = MIN_REWARD_FRAC,
+) -> dict:
   runs: dict[tuple[str, int], dict[int, dict]] = defaultdict(dict)
   for name, r in results.items():
     m = _NAME.match(name)
@@ -71,6 +76,7 @@ def summarize(results: dict, expert: str, reference_config: str | None = None) -
       "min_lift": MIN_LIFT_FRAC * mean("swing_peak_cm"),
     }
   expert_reward = ref["reward"]
+  ref["min_reward_frac"] = min_reward_frac
 
   per_run = {}
   for (config, seed), ckpts in sorted(runs.items()):
@@ -116,11 +122,17 @@ def main() -> None:
   parser.add_argument("results", type=Path)
   parser.add_argument("--expert", default="expert_step")
   parser.add_argument("--reference-config", default=None)
+  parser.add_argument("--min-reward-frac", type=float, default=MIN_REWARD_FRAC)
   parser.add_argument("--out", type=Path, default=None)
   args = parser.parse_args()
   summary = summarize(
-    json.loads(args.results.read_text()), args.expert, args.reference_config
+    json.loads(args.results.read_text()),
+    args.expert,
+    args.reference_config,
+    args.min_reward_frac,
   )
+  print(f"Target: true reward >= {100 * args.min_reward_frac:.0f}% of the reference")
+  print()
   print(
     "| config | seeds reached | iterations to target (each seed) "
     "| final reward / reference |"

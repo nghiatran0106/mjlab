@@ -56,6 +56,7 @@ class AmpOnPolicyRunner(VelocityOnPolicyRunner):
   - ``MJLAB_AMP_LERP_START``, ``MJLAB_AMP_LERP_HOLD``, ``MJLAB_AMP_LERP_RAMP``:
     schedule for the task-reward weight (see ``AmpCfg.lerp_start``).
   - ``MJLAB_AMP_BC_FILE``, ``MJLAB_AMP_BC_STEPS``: behavior-cloning pretraining.
+  - ``MJLAB_AMP_CRITIC_WARMUP``: iterations that update only the critic.
 
   The exploration overrides of :func:`apply_exploration_overrides` also apply.
   """
@@ -81,6 +82,7 @@ class AmpOnPolicyRunner(VelocityOnPolicyRunner):
       "lerp_ramp_iters": int(os.environ.get("MJLAB_AMP_LERP_RAMP", "0")),
       "bc_file": os.environ.get("MJLAB_AMP_BC_FILE", ""),
       "bc_steps": int(os.environ.get("MJLAB_AMP_BC_STEPS", "2000")),
+      "critic_warmup_iters": int(os.environ.get("MJLAB_AMP_CRITIC_WARMUP", "0")),
       "step_dt": env.unwrapped.step_dt,  # type: ignore[attr-defined]
     }
     print(f"[INFO] AMP config: {amp_cfg}")

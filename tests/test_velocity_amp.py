@@ -43,6 +43,9 @@ def test_convergence_reports_first_checkpoint_meeting_target():
   cfg = summary["per_config"]["cfg"]
   assert (cfg["seeds"], cfg["reached"]) == (2, 1)
   assert cfg["iterations_to_target_all"] == [500, None]
+  # A stricter reward threshold (95% of 5.0 = 4.75) is never met here.
+  strict = summarize(results, expert="expert_step", min_reward_frac=0.95)
+  assert strict["per_run"]["cfg_s1"]["iterations_to_target"] is None
 
 
 def test_convergence_relative_to_reference_config():

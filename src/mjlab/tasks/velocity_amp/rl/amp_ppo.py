@@ -55,6 +55,10 @@ class AmpCfg:
   """``.npz`` with expert ``obs`` (actor observations) and ``actions``. If set,
   the actor is first trained to regress the expert actions (behavior cloning)."""
   bc_steps: int = 2000
+  critic_warmup_iters: int = 0
+  """For this many iterations only the critic (and the discriminator) are
+  updated. After behavior cloning the critic is still random, and policy
+  updates driven by its advantages would first degrade the cloned policy."""
   bc_batch_size: int = 4096
   bc_learning_rate: float = 1e-3
 
@@ -173,7 +177,18 @@ class AmpPPO(PPO):
     )
 
   def update(self) -> dict[str, float]:
+    warmup = self._iteration < self.amp_cfg.critic_warmup_iters
+    learning_rate = self.learning_rate
+    for p in self.actor.parameters():
+      p.requires_grad_(not warmup)
     loss_dict = super().update()
+    if warmup:
+      for p in self.actor.parameters():
+        p.requires_grad_(True)
+      # The adaptive schedule saw a policy that did not move; keep its rate.
+      self.learning_rate = learning_rate
+      for group in self.optimizer.param_groups:
+        group["lr"] = learning_rate
     loss_dict["amp_task_lerp"] = self.current_lerp()
     self._iteration += 1
     if self.style_enabled and self._policy_s:

@@ -14,6 +14,14 @@
 #               from scratch (the ExpertStep config that produced the expert);
 #   - bctask:   bc without the GAIL style reward (task reward only), to separate
 #               the contribution of GAIL from that of behavior cloning.
+#   - bcr:      bc + action-rate penalty as a third hand-written term. The
+#               discriminator sees states only, and bc loses 6 of its 9 points to
+#               the expert on action jerk. The weight is -0.1 after the 0.3 task
+#               weight, the same as in the hand-written reward;
+#   - bcrs:     bcr + initial action std 0.3 instead of 1.0, so exploration noise
+#               does not undo the cloned policy in the first ~150 iterations;
+#   - bcrsw:    bcrs + 25 iterations that update only the critic (it starts random
+#               after behavior cloning).
 # CONFIGS selects the configs (default "sched schedbc"). Compare
 # iterations-to-target with v7c from phase 1 (same seeds, same protocol).
 # With TIMING=1 (default) every config in TIMING_CONFIGS (default: CONFIGS) is
@@ -91,6 +99,7 @@ common=(MJLAB_AMP_EXPERT="$cond" MJLAB_AMP_STYLE_WEIGHT=4 MJLAB_AMP_TASK_LERP=0.
   MJLAB_AMP_REPLAY=1000000 MJLAB_AMP_RSI_FILE="$states" MJLAB_AMP_RSI_PROB=0.85)
 schedule=(MJLAB_AMP_LERP_START=0.9 MJLAB_AMP_LERP_HOLD=250 MJLAB_AMP_LERP_RAMP=500)
 cloning=(MJLAB_AMP_BC_FILE="$bc" MJLAB_AMP_BC_STEPS=2000)
+smooth=(MJLAB_AMP_ACTION_RATE=-0.3333)  # x 0.3 (task weight) = -0.1
 
 config_task() {  # config_task <config>
   case "$1" in
@@ -105,6 +114,10 @@ config_env() {  # config_env <config> -> sets the array "extra"
     schedbc) extra=("${common[@]}" "${schedule[@]}" "${cloning[@]}") ;;
     v7c) extra=("${common[@]}") ;;
     bc) extra=("${common[@]}" "${cloning[@]}") ;;
+    bcr) extra=("${common[@]}" "${cloning[@]}" "${smooth[@]}") ;;
+    bcrs) extra=("${common[@]}" "${cloning[@]}" "${smooth[@]}" MJLAB_INIT_STD=0.3) ;;
+    bcrsw) extra=("${common[@]}" "${cloning[@]}" "${smooth[@]}" MJLAB_INIT_STD=0.3
+      MJLAB_AMP_CRITIC_WARMUP=25) ;;
     bctask) extra=("${common[@]}" "${cloning[@]}" MJLAB_AMP_STYLE_WEIGHT=0) ;;
     ppo) extra=(MJLAB_UNUSED=1) ;;  # stock runner: none of the AMP settings apply
     *) echo "unknown config: $1" >&2; exit 2 ;;
@@ -147,6 +160,10 @@ done
 "${uv_run[@]}" python -m mjlab.tasks.velocity_amp.scripts.convergence \
   "logs/amp_eval/results-$tag-$stamp.json" "${reference[@]}" \
   --out "logs/amp_eval/convergence-$tag-$stamp.json" | tee "logs/${tag}_summary.md"
+# Same table with the stricter reward threshold (95% instead of 90%).
+"${uv_run[@]}" python -m mjlab.tasks.velocity_amp.scripts.convergence \
+  "logs/amp_eval/results-$tag-$stamp.json" "${reference[@]}" --min-reward-frac 0.95 \
+  | tee -a "logs/${tag}_summary.md"
 
 if [[ "$timing" == 1 ]]; then
   echo "== timing: each config alone on one GPU, $timing_iters iterations =="
@@ -179,6 +196,10 @@ files=("logs/amp_eval/results-$tag-$stamp.json" "logs/amp_eval/convergence-$tag-
 for r in "${runs[@]}"; do
   d="$(run_dir "$r")"
   files+=("$d"/events.out.* "$(ls -t "$d"/model_*.pt | head -1)")
+  # Also every 250th checkpoint, for demos of earlier stages.
+  for ((it = 250; it < iters; it += 250)); do
+    [[ -f "$d/model_$it.pt" ]] && files+=("$d/model_$it.pt")
+  done
 done
 tar czf "logs/${tag}_results-$stamp.tgz" "${files[@]}"
 ls -la "logs/${tag}_results-$stamp.tgz"

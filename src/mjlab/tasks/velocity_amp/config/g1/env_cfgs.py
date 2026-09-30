@@ -1,5 +1,7 @@
 """G1 flat velocity configs for the task-only and AMP experiments."""
 
+import os
+
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
 from mjlab.managers.event_manager import EventTermCfg
@@ -40,7 +42,15 @@ def unitree_g1_flat_amp_env_cfg(
 ) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_flat_env_cfg(play=play)
   cfg.observations["amp"] = _amp_group(key_bodies, gait, gait_lite)
+  action_rate = cfg.rewards["action_rate_l2"]
   cfg.rewards = {k: v for k, v in cfg.rewards.items() if k in TASK_REWARD_TERMS}
+  # The discriminator sees states only, so nothing discourages jerky actions.
+  # MJLAB_AMP_ACTION_RATE (a negative weight) keeps the action-rate penalty as a
+  # third hand-written term.
+  action_rate_weight = float(os.environ.get("MJLAB_AMP_ACTION_RATE", "0"))
+  if action_rate_weight != 0.0:
+    action_rate.weight = action_rate_weight
+    cfg.rewards["action_rate_l2"] = action_rate
   if play:
     _use_training_command_ranges(cfg)
   else:
