@@ -22,8 +22,10 @@ Then open the printed compare.html (or http://localhost:8080, 8081, ...).
 
 import argparse
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import torch
 import viser
 
@@ -54,6 +56,12 @@ def main() -> None:
   parser.add_argument("--single", action="store_true", help="all robots in one view")
   parser.add_argument("--port", type=int, default=8080)
   parser.add_argument("--columns", type=int, default=3)
+  parser.add_argument(
+    "--record",
+    type=float,
+    default=0.0,
+    help="simulate this many seconds first, then replay smoothly (split views)",
+  )
   parser.add_argument(
     "--views", type=int, default=0, help="number of views (default: one per policy)"
   )
@@ -126,13 +134,69 @@ def main() -> None:
   env.close()
 
 
+Terms = list[tuple[str, np.ndarray]]
+
+
+@dataclass
+class Frame:
+  """Everything the views show for one control step, for all robots."""
+
+  xpos: np.ndarray
+  xmat: np.ndarray
+  command: np.ndarray  # (num_envs, 3)
+  lin_vel: np.ndarray  # (num_envs, 3), body frame
+  yaw_rate: np.ndarray
+  height: np.ndarray
+  episode_time: np.ndarray
+  falls: np.ndarray
+  rewards: list[Terms]  # per robot
+  metrics: list[Terms]
+
+
+def capture(env, falls: np.ndarray) -> Frame:
+  robot = env.scene["robot"]
+  n = env.num_envs
+  return Frame(
+    xpos=env.sim.data.xpos.cpu().numpy().copy(),
+    xmat=env.sim.data.xmat.cpu().numpy().copy(),
+    command=env.command_manager.get_command("twist").cpu().numpy().copy(),
+    lin_vel=robot.data.root_link_lin_vel_b.cpu().numpy().copy(),
+    yaw_rate=robot.data.root_link_ang_vel_b[:, 2].cpu().numpy().copy(),
+    height=robot.data.root_link_pos_w[:, 2].cpu().numpy().copy(),
+    episode_time=env.episode_length_buf.cpu().numpy() * env.step_dt,
+    falls=falls.copy(),
+    rewards=[_terms(env.reward_manager, i) for i in range(n)],
+    metrics=[_terms(env.metrics_manager, i) for i in range(n)],
+  )
+
+
+def _terms(manager, env_idx: int) -> Terms:
+  return [
+    (name, np.asarray(v)) for name, v in manager.get_active_iterable_terms(env_idx)
+  ]
+
+
+@dataclass
+class Shared:
+  """State shared by all views (their GUI callbacks run in other threads)."""
+
+  command: torch.Tensor | None  # live mode: fixed command, edited by sliders
+  duration: float  # replay mode: length of the recording in seconds, else 0
+  paused: bool = False
+  restart: bool = False
+  speed: float = 1.0  # target simulated seconds per wall-clock second
+  realtime: float = 0.0  # measured
+  seek: float | None = None  # replay mode: jump to this time
+  time: float = 0.0
+
+
 class PolicyView:
   """One web viewer: the robot of the selected policy plus the same tabs as the
   play viewer (info, rewards, metrics, visualization, groups)."""
 
-  def __init__(self, k: int, env, wrapped, names: list[str], state: dict, args):
+  def __init__(self, k: int, env, wrapped, names: list[str], shared: Shared, args):
     sim = env.sim
-    self.env, self.names, self.state, self.copies = env, names, state, args.copies
+    self.names, self.shared, self.copies = names, shared, args.copies
     self.server = viser.ViserServer(
       port=args.port + k, label=f"view {k}", verbose=False
     )
@@ -160,33 +224,11 @@ class PolicyView:
 
       with gui.add_folder("Info"):
         self.status = gui.add_html("")
-      with gui.add_folder("Simulation (all views)"):
-        pause = gui.add_button("Pause / Play", icon=viser.Icon.PLAYER_PAUSE)
-        reset = gui.add_button("Reset all robots")
-
-        @pause.on_click
-        def _(_) -> None:
-          state["paused"] = not state["paused"]
-
-        @reset.on_click
-        def _(_) -> None:
-          state["reset"] = True
-
-      if state["command"] is not None:
+      with gui.add_folder("Playback (all views)"):
+        self._add_playback_controls()
+      if shared.command is not None:
         with gui.add_folder("Command (all robots)"):
-          for i, label in enumerate(("lin_x (m/s)", "lin_y (m/s)", "yaw (rad/s)")):
-            slider = gui.add_slider(
-              label,
-              min=-1.0,
-              max=1.0,
-              step=0.05,
-              initial_value=float(state["command"][i]),
-            )
-
-            @slider.on_update
-            def _(_, i=i, slider=slider) -> None:
-              state["command"][i] = slider.value
-
+          self._add_command_sliders(shared.command)
       with gui.add_folder("Scene"):
         self.scene.create_scene_gui()
     with tabs.add_tab("Visualization", icon=viser.Icon.EYE):
@@ -196,80 +238,185 @@ class PolicyView:
     with tabs.add_tab("Groups", icon=viser.Icon.LAYERS_INTERSECT):
       self.scene.create_groups_gui()
 
-  def update(self) -> None:
+  def _add_playback_controls(self) -> None:
+    gui, shared = self.server.gui, self.shared
+    pause = gui.add_button("Pause / Play", icon=viser.Icon.PLAYER_PAUSE)
+    speed = gui.add_button_group("Speed", options=["Slower", "1x", "Faster"])
+    restart = gui.add_button("Restart" if shared.duration else "Reset all robots")
+
+    @pause.on_click
+    def _(_) -> None:
+      shared.paused = not shared.paused
+
+    @speed.on_click
+    def _(event) -> None:
+      value = event.target.value
+      if value == "1x":
+        shared.speed = 1.0
+      else:
+        factor = 0.5 if value == "Slower" else 2.0
+        shared.speed = min(8.0, max(0.125, shared.speed * factor))
+
+    @restart.on_click
+    def _(_) -> None:
+      shared.restart = True
+
+    if shared.duration:
+      self.timeline = gui.add_slider(
+        "Time (s)", min=0.0, max=shared.duration, step=0.02, initial_value=0.0
+      )
+
+      @self.timeline.on_update
+      def _(event) -> None:
+        if event.client is not None:  # moved by the user, not by update()
+          shared.seek = self.timeline.value
+
+  def _add_command_sliders(self, command: torch.Tensor) -> None:
+    for i, label in enumerate(("lin_x (m/s)", "lin_y (m/s)", "yaw (rad/s)")):
+      slider = self.server.gui.add_slider(
+        label, min=-1.0, max=1.0, step=0.05, initial_value=float(command[i])
+      )
+
+      @slider.on_update
+      def _(_, i=i, slider=slider) -> None:
+        command[i] = slider.value
+
+  def clear_plots(self) -> None:
+    self.overlays.clear_histories()
+
+  def feed_plots(self, frame: Frame) -> None:
+    """Append one step of reward/metric terms of the selected robot."""
     i = self.scene.env_idx
     if i != self.prev_env_idx:
       self.prev_env_idx = i
       self.overlays.on_env_switch()
-    self.overlays.update(self.state["paused"])
-    with self.server.atomic():
-      self.scene.update(self.env.sim.data)
-    self.server.flush()
-    self.status.content = self._status_html(i)
+    o = self.overlays
+    if o.reward_plotter is not None:
+      o.reward_plotter.update(frame.rewards[i])
+    if o.reward_bar_panel is not None:
+      o.reward_bar_panel.update(frame.rewards[i])
+    if o.metrics_plotter is not None:
+      o.metrics_plotter.update(frame.metrics[i])
 
-  def _status_html(self, i: int) -> str:
-    robot = self.env.scene["robot"]
-    cmd = self.env.command_manager.get_command("twist")[i].tolist()
-    lin = robot.data.root_link_lin_vel_b[i].tolist()
-    yaw = robot.data.root_link_ang_vel_b[i, 2].item()
-    height = robot.data.root_link_pos_w[i, 2].item()
-    name = self.names[i // self.copies]
-    t = self.env.episode_length_buf[i].item() * self.env.step_dt
+  def draw(self, frame: Frame) -> None:
+    with self.server.atomic():
+      self.scene.update_from_arrays(frame.xpos, frame.xmat)
+      if self.shared.duration:
+        self.timeline.value = round(self.shared.time, 2)
+    self.server.flush()
+    self.status.content = self._status_html(frame)
+
+  def _status_html(self, f: Frame) -> str:
+    i, s = self.scene.env_idx, self.shared
+    cmd, lin = f.command[i], f.lin_vel[i]
+    mode = f"replay {s.time:.1f} / {s.duration:.0f} s" if s.duration else "live"
     rows = [
-      ("policy", f"<b>{name}</b> (env {i})"),
-      ("episode time", f"{t:.1f} s" + ("  (paused)" if self.state["paused"] else "")),
+      ("policy", f"<b>{self.names[i // self.copies]}</b> (env {i})"),
+      ("mode", mode + ("  (paused)" if s.paused else "")),
+      ("episode time", f"{f.episode_time[i]:.1f} s"),
       ("command x, y, yaw", f"{cmd[0]:+.2f}, {cmd[1]:+.2f}, {cmd[2]:+.2f}"),
-      ("actual x, y, yaw", f"{lin[0]:+.2f}, {lin[1]:+.2f}, {yaw:+.2f}"),
-      ("pelvis height", f"{height:.2f} m"),
-      ("falls", str(self.state["falls"][i])),
+      ("actual x, y, yaw", f"{lin[0]:+.2f}, {lin[1]:+.2f}, {f.yaw_rate[i]:+.2f}"),
+      ("pelvis height", f"{f.height[i]:.2f} m"),
+      ("falls", str(int(f.falls[i]))),
+      ("speed (target / actual)", f"{s.speed:g}x / {s.realtime:.2f}x"),
     ]
     cells = "".join(f"<tr><td>{a}</td><td>{b}</td></tr>" for a, b in rows)
     return f"<table style='font-size:0.85em'>{cells}</table>"
+
+
+# Views are redrawn at most RENDER_HZ times per second; the plots still get
+# every control step.
+RENDER_HZ = 30
 
 
 def run_split(
   env, wrapped, policy, names: list[str], args, command: torch.Tensor | None
 ) -> None:
   """One simulation, several web viewers; each shows the first robot of the
-  policy selected in its dropdown (initially policy k for view k)."""
-  num_views = args.views if args.views > 0 else len(names)
-  state = {
-    "paused": False,
-    "reset": False,
-    "command": command,
-    "falls": [0] * env.num_envs,
-  }
-  views = [PolicyView(k, env, wrapped, names, state, args) for k in range(num_views)]
+  policy selected in its dropdown (initially policy k for view k).
 
+  Live mode simulates while showing, which runs slower than real time on a CPU.
+  With ``--record SECONDS`` the simulation runs first and the recording is then
+  replayed smoothly at any speed, in a loop, with a time slider.
+  """
+  step_dt = env.step_dt
+  frames: list[Frame] = []
+  obs = wrapped.get_observations()
+  falls = np.zeros(env.num_envs)
+
+  def step() -> Frame:
+    nonlocal obs
+    with torch.inference_mode():
+      obs, _, dones, extras = wrapped.step(policy(obs))
+    falls[(dones.bool() & ~extras["time_outs"].bool()).cpu().numpy()] += 1
+    return capture(env, falls)
+
+  if args.record > 0:
+    num_steps = round(args.record / step_dt)
+    start = time.perf_counter()
+    for t in range(num_steps):
+      frames.append(step())
+      if (t + 1) % 50 == 0 or t + 1 == num_steps:
+        elapsed = time.perf_counter() - start
+        eta = elapsed / (t + 1) * (num_steps - t - 1)
+        print(f"\rRecording {t + 1}/{num_steps} steps, ~{eta:.0f} s left", end="")
+    print()
+    command = None
+
+  shared = Shared(command=command, duration=len(frames) * step_dt)
+  num_views = args.views if args.views > 0 else len(names)
+  views = [PolicyView(k, env, wrapped, names, shared, args) for k in range(num_views)]
   page = write_grid_page(num_views, args.port, args.columns)
   last = args.port + num_views - 1
   print(f"Open {page}  (or http://localhost:{args.port}..{last})")
   print("Ctrl+C to stop.")
 
-  obs = wrapped.get_observations()
-  step_dt = env.step_dt
+  frame = frames[0] if frames else capture(env, falls)
+  index = 0  # replay position
+  last_draw = clock = time.perf_counter()
+  shown = 0.0  # simulated seconds shown since `clock`
   try:
     while True:
-      start = time.perf_counter()
-      if state["reset"]:
-        state["reset"] = False
-        state["falls"] = [0] * env.num_envs
-        obs, _ = wrapped.reset()
+      tick = time.perf_counter()
+      if shared.restart or shared.seek is not None:
+        target = shared.seek or 0.0
+        shared.restart, shared.seek = False, None
+        if frames:
+          index = min(len(frames) - 1, round(target / step_dt))
+          frame = frames[index]
+        else:
+          obs, _ = wrapped.reset()
+          falls[:] = 0
+          frame = capture(env, falls)
         for view in views:
-          view.overlays.clear_histories()
-      if not state["paused"]:
-        if command is not None:  # the sliders change it in place
-          term = env.command_manager.get_term("twist")
-          assert isinstance(term, UniformVelocityCommand)
-          term.vel_command_b[:] = command
-        with torch.inference_mode():
-          obs, _, dones, extras = wrapped.step(policy(obs))
-        falls = dones.bool() & ~extras["time_outs"].bool()
-        for i in falls.nonzero().flatten().tolist():
-          state["falls"][i] += 1
-      for view in views:
-        view.update()
-      time.sleep(max(0.0, step_dt - (time.perf_counter() - start)))
+          view.clear_plots()
+      if not shared.paused:
+        if frames:
+          index += 1
+          if index >= len(frames):  # loop
+            index = 0
+            for view in views:
+              view.clear_plots()
+          frame = frames[index]
+        else:
+          if command is not None:  # the sliders change it in place
+            term = env.command_manager.get_term("twist")
+            assert isinstance(term, UniformVelocityCommand)
+            term.vel_command_b[:] = command
+          frame = step()
+        shown += step_dt
+        for view in views:
+          view.feed_plots(frame)
+      shared.time = index * step_dt
+      now = time.perf_counter()
+      if now - last_draw >= 1.0 / RENDER_HZ:
+        last_draw = now
+        for view in views:
+          view.draw(frame)
+      if now - clock >= 1.0:
+        shared.realtime, shown, clock = shown / (now - clock), 0.0, now
+        print(f"\r{shared.realtime:.2f}x real time", end="", flush=True)
+      time.sleep(max(0.0, step_dt / shared.speed - (time.perf_counter() - tick)))
   except KeyboardInterrupt:
     pass
 
