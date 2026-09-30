@@ -37,6 +37,7 @@ from mjlab.tasks.velocity_amp.scripts.common import (
   load_policy,
 )
 from mjlab.viewer import ViserPlayViewer
+from mjlab.viewer.viser.overlays import ViserTermOverlays
 from mjlab.viewer.viser.scene import MjlabViserScene
 
 
@@ -77,6 +78,7 @@ def main() -> None:
     cmd.rel_world_envs = 0.0
 
   env = ManagerBasedRlEnv(cfg, device=args.device)
+  fixed = None
   if not args.random_commands:
     term = env.command_manager.get_term("twist")
     assert isinstance(term, UniformVelocityCommand)
@@ -120,30 +122,124 @@ def main() -> None:
     ViserPlayViewer(wrapped, policy).run()
   else:
     names = [name for name, _ in specs]
-    run_split(env, wrapped, policy, names, args)
+    run_split(env, wrapped, policy, names, args, fixed)
   env.close()
 
 
-def run_split(env, wrapped, policy, names: list[str], args) -> None:
-  """One simulation, several web viewers; each shows the first robot of the
-  policy selected in its dropdown (initially policy k for view k)."""
-  sim = env.sim
-  num_views = args.views if args.views > 0 else len(names)
-  servers, scenes = [], []
-  for k in range(num_views):
-    server = viser.ViserServer(port=args.port + k, label=f"view {k}", verbose=False)
-    scene = MjlabViserScene(
-      server=server,
+class PolicyView:
+  """One web viewer: the robot of the selected policy plus the same tabs as the
+  play viewer (info, rewards, metrics, visualization, groups)."""
+
+  def __init__(self, k: int, env, wrapped, names: list[str], state: dict, args):
+    sim = env.sim
+    self.env, self.names, self.state, self.copies = env, names, state, args.copies
+    self.server = viser.ViserServer(
+      port=args.port + k, label=f"view {k}", verbose=False
+    )
+    self.scene = MjlabViserScene(
+      server=self.server,
       mj_model=sim.mj_model,
       num_envs=env.num_envs,
       sim_model=sim.model,
       expanded_fields=sim.expanded_fields,
     )
-    scene.env_idx = (k % len(names)) * args.copies
-    scene.show_only_selected = True
-    add_policy_selector(server, scene, names, k % len(names), args.copies)
-    servers.append(server)
-    scenes.append(scene)
+    self.scene.env_idx = (k % len(names)) * args.copies
+    self.scene.show_only_selected = True
+    self.prev_env_idx = self.scene.env_idx
+
+    gui = self.server.gui
+    tabs = gui.add_tab_group()
+    with tabs.add_tab("Controls", icon=viser.Icon.SETTINGS):
+      policy = gui.add_dropdown(
+        "Policy", tuple(names), initial_value=names[k % len(names)]
+      )
+
+      @policy.on_update
+      def _(_) -> None:
+        self.scene.env_idx = names.index(policy.value) * self.copies
+
+      with gui.add_folder("Info"):
+        self.status = gui.add_html("")
+      with gui.add_folder("Simulation (all views)"):
+        pause = gui.add_button("Pause / Play", icon=viser.Icon.PLAYER_PAUSE)
+        reset = gui.add_button("Reset all robots")
+
+        @pause.on_click
+        def _(_) -> None:
+          state["paused"] = not state["paused"]
+
+        @reset.on_click
+        def _(_) -> None:
+          state["reset"] = True
+
+      if state["command"] is not None:
+        with gui.add_folder("Command (all robots)"):
+          for i, label in enumerate(("lin_x (m/s)", "lin_y (m/s)", "yaw (rad/s)")):
+            slider = gui.add_slider(
+              label,
+              min=-1.0,
+              max=1.0,
+              step=0.05,
+              initial_value=float(state["command"][i]),
+            )
+
+            @slider.on_update
+            def _(_, i=i, slider=slider) -> None:
+              state["command"][i] = slider.value
+
+      with gui.add_folder("Scene"):
+        self.scene.create_scene_gui()
+    with tabs.add_tab("Visualization", icon=viser.Icon.EYE):
+      self.scene.create_overlay_gui()
+    self.overlays = ViserTermOverlays(self.server, wrapped, self.scene, env.step_dt)
+    self.overlays.setup_tabs(tabs)
+    with tabs.add_tab("Groups", icon=viser.Icon.LAYERS_INTERSECT):
+      self.scene.create_groups_gui()
+
+  def update(self) -> None:
+    i = self.scene.env_idx
+    if i != self.prev_env_idx:
+      self.prev_env_idx = i
+      self.overlays.on_env_switch()
+    self.overlays.update(self.state["paused"])
+    with self.server.atomic():
+      self.scene.update(self.env.sim.data)
+    self.server.flush()
+    self.status.content = self._status_html(i)
+
+  def _status_html(self, i: int) -> str:
+    robot = self.env.scene["robot"]
+    cmd = self.env.command_manager.get_command("twist")[i].tolist()
+    lin = robot.data.root_link_lin_vel_b[i].tolist()
+    yaw = robot.data.root_link_ang_vel_b[i, 2].item()
+    height = robot.data.root_link_pos_w[i, 2].item()
+    name = self.names[i // self.copies]
+    t = self.env.episode_length_buf[i].item() * self.env.step_dt
+    rows = [
+      ("policy", f"<b>{name}</b> (env {i})"),
+      ("episode time", f"{t:.1f} s" + ("  (paused)" if self.state["paused"] else "")),
+      ("command x, y, yaw", f"{cmd[0]:+.2f}, {cmd[1]:+.2f}, {cmd[2]:+.2f}"),
+      ("actual x, y, yaw", f"{lin[0]:+.2f}, {lin[1]:+.2f}, {yaw:+.2f}"),
+      ("pelvis height", f"{height:.2f} m"),
+      ("falls", str(self.state["falls"][i])),
+    ]
+    cells = "".join(f"<tr><td>{a}</td><td>{b}</td></tr>" for a, b in rows)
+    return f"<table style='font-size:0.85em'>{cells}</table>"
+
+
+def run_split(
+  env, wrapped, policy, names: list[str], args, command: torch.Tensor | None
+) -> None:
+  """One simulation, several web viewers; each shows the first robot of the
+  policy selected in its dropdown (initially policy k for view k)."""
+  num_views = args.views if args.views > 0 else len(names)
+  state = {
+    "paused": False,
+    "reset": False,
+    "command": command,
+    "falls": [0] * env.num_envs,
+  }
+  views = [PolicyView(k, env, wrapped, names, state, args) for k in range(num_views)]
 
   page = write_grid_page(num_views, args.port, args.columns)
   last = args.port + num_views - 1
@@ -155,31 +251,27 @@ def run_split(env, wrapped, policy, names: list[str], args) -> None:
   try:
     while True:
       start = time.perf_counter()
-      with torch.inference_mode():
-        obs, _, _, _ = wrapped.step(policy(obs))
-      for server, scene in zip(servers, scenes, strict=True):
-        with server.atomic():
-          scene.update(sim.data)
-        server.flush()
+      if state["reset"]:
+        state["reset"] = False
+        state["falls"] = [0] * env.num_envs
+        obs, _ = wrapped.reset()
+        for view in views:
+          view.overlays.clear_histories()
+      if not state["paused"]:
+        if command is not None:  # the sliders change it in place
+          term = env.command_manager.get_term("twist")
+          assert isinstance(term, UniformVelocityCommand)
+          term.vel_command_b[:] = command
+        with torch.inference_mode():
+          obs, _, dones, extras = wrapped.step(policy(obs))
+        falls = dones.bool() & ~extras["time_outs"].bool()
+        for i in falls.nonzero().flatten().tolist():
+          state["falls"][i] += 1
+      for view in views:
+        view.update()
       time.sleep(max(0.0, step_dt - (time.perf_counter() - start)))
   except KeyboardInterrupt:
     pass
-
-
-def add_policy_selector(
-  server: viser.ViserServer,
-  scene: MjlabViserScene,
-  names: list[str],
-  initial: int,
-  copies: int,
-) -> None:
-  dropdown = server.gui.add_dropdown(
-    "Policy", tuple(names), initial_value=names[initial]
-  )
-
-  @dropdown.on_update
-  def _(_) -> None:
-    scene.env_idx = names.index(dropdown.value) * copies
 
 
 def write_grid_page(num_views: int, port: int, columns: int) -> Path:
