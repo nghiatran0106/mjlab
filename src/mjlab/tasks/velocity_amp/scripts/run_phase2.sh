@@ -173,11 +173,33 @@ for r in "${runs[@]}"; do
   done
 done
 # On a variant, the nominal expert is evaluated there too (zero-shot transfer).
-"${uv_run[@]}" python -m mjlab.tasks.velocity_amp.scripts.evaluate \
-  --task "Mjlab-Velocity-Flat-Unitree-G1-Expert$suffix" \
-  --expert-file "$base" "${policies[@]}" \
-  --out "logs/amp_eval/results-$tag-$stamp.json" \
-  > "logs/amp_console/eval-$tag-$stamp.log" 2>&1
+# EVAL_JOBS evaluator processes share the checkpoints (round-robin over GPUS);
+# their JSON files are merged. Every checkpoint uses the same seed and protocol.
+eval_jobs="${EVAL_JOBS:-1}"
+parts=()
+for ((j = 0; j < eval_jobs; j++)); do
+  chunk=()
+  for ((k = 0; k < ${#policies[@]}; k += 2)); do
+    (( (k / 2) % eval_jobs == j )) && chunk+=("${policies[@]:k:2}")
+  done
+  (( ${#chunk[@]} )) || continue
+  part="logs/amp_eval/part$j-$tag-$stamp.json"
+  parts+=("$part")
+  CUDA_VISIBLE_DEVICES="${gpus[$((j % ${#gpus[@]}))]}" \
+    "${uv_run[@]}" python -m mjlab.tasks.velocity_amp.scripts.evaluate \
+    --task "Mjlab-Velocity-Flat-Unitree-G1-Expert$suffix" \
+    --expert-file "$base" "${chunk[@]}" --out "$part" \
+    > "logs/amp_console/eval$j-$tag-$stamp.log" 2>&1 &
+done
+wait
+python3 - "logs/amp_eval/results-$tag-$stamp.json" "${parts[@]}" <<'PY'
+import json, sys
+merged = {}
+for part in sys.argv[2:]:
+  merged.update(json.load(open(part)))
+json.dump(merged, open(sys.argv[1], "w"), indent=2)
+print(f"[INFO] merged {len(merged)} evaluations from {len(sys.argv) - 2} jobs")
+PY
 "${uv_run[@]}" python -m mjlab.tasks.velocity_amp.scripts.convergence \
   "logs/amp_eval/results-$tag-$stamp.json" "${reference[@]}" \
   --out "logs/amp_eval/convergence-$tag-$stamp.json" | tee "logs/${tag}_summary.md"
