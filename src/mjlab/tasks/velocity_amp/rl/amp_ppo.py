@@ -61,6 +61,16 @@ class AmpCfg:
   updates driven by its advantages would first degrade the cloned policy."""
   bc_batch_size: int = 4096
   bc_learning_rate: float = 1e-3
+  action_rate_target: float = -1.0
+  """If >= 0, add an action-rate penalty ``-w * dt * ||a_t - a_{t-1}||^2`` to the
+  task reward (before the task/style mix) whose weight ``w`` is a Lagrange
+  multiplier: after each iteration ``w += action_rate_lr * (cost - target)``,
+  clipped to ``[0, action_rate_max]``. ``cost`` is the mean per-step
+  ``||mu_t - mu_{t-1}||^2`` of the policy mean, so exploration noise does not
+  count as jerk; the target is the expert's value. Negative disables it."""
+  action_rate_init: float = 0.1
+  action_rate_lr: float = 0.01
+  action_rate_max: float = 1.0
 
 
 def scheduled_lerp(
@@ -130,13 +140,29 @@ class AmpPPO(PPO):
     self._style_reward_sum = 0.0
     self._style_reward_count = 0
 
+    self.action_rate_weight = cfg.action_rate_init
+    self._prev_action: torch.Tensor | None = None
+    self._prev_mean: torch.Tensor | None = None
+    self._action: torch.Tensor | None = None
+    self._mean: torch.Tensor | None = None
+    self._mean_cost_sum = 0.0
+    self._mean_cost_count = 0
+
+  @property
+  def adaptive_action_rate(self) -> bool:
+    return self.amp_cfg.action_rate_target >= 0.0
+
   @property
   def style_enabled(self) -> bool:
     return self.expert is not None and self.amp_cfg.style_reward_weight > 0.0
 
   def act(self, obs: TensorDict) -> torch.Tensor:
     self._amp_prev = obs[self.amp_cfg.obs_group].clone()
-    return super().act(obs)
+    actions = super().act(obs)
+    if self.adaptive_action_rate:
+      self._action = actions.clone()
+      self._mean = self.actor.output_mean.detach().clone()
+    return actions
 
   def process_env_step(
     self,
@@ -145,6 +171,8 @@ class AmpPPO(PPO):
     dones: torch.Tensor,
     extras: dict[str, torch.Tensor],
   ) -> None:
+    if self.adaptive_action_rate:
+      rewards = rewards - self._action_rate_penalty(dones)
     if self.style_enabled and self._amp_prev is not None:
       s = self._amp_prev
       s_next = obs[self.amp_cfg.obs_group]
@@ -164,6 +192,46 @@ class AmpPPO(PPO):
       self._style_reward_sum += style.sum().item()
       self._style_reward_count += style.numel()
     super().process_env_step(obs, rewards, dones, extras)
+
+  def _action_rate_penalty(self, dones: torch.Tensor) -> torch.Tensor:
+    """Penalty on the applied (sampled) actions; also records the mean-action
+    cost that drives the multiplier."""
+    assert self._action is not None and self._mean is not None
+    if self._prev_action is None or self._prev_mean is None:
+      self._prev_action = torch.zeros_like(self._action)
+      self._prev_mean = self._mean.clone()
+    penalty = (
+      self.action_rate_weight
+      * self.amp_cfg.step_dt
+      * (self._action - self._prev_action).pow(2).sum(dim=-1)
+    )
+    # The first mean action of an episode has no predecessor: skip it.
+    fresh = (self._prev_action == 0).all(dim=-1)
+    cost = (self._mean - self._prev_mean).pow(2).sum(dim=-1)[~fresh]
+    self._mean_cost_sum += cost.sum().item()
+    self._mean_cost_count += cost.numel()
+    # The environment resets the previous action of finished episodes to zero.
+    reset = (dones.view(-1) > 0)[:, None]
+    self._prev_action = torch.where(reset, 0.0, self._action)
+    self._prev_mean = self._mean
+    return penalty
+
+  def _update_action_rate_weight(self) -> dict[str, float]:
+    cfg = self.amp_cfg
+    cost = self._mean_cost_sum / max(self._mean_cost_count, 1)
+    self.action_rate_weight = min(
+      max(
+        self.action_rate_weight + cfg.action_rate_lr * (cost - cfg.action_rate_target),
+        0.0,
+      ),
+      cfg.action_rate_max,
+    )
+    self._mean_cost_sum = 0.0
+    self._mean_cost_count = 0
+    return {
+      "amp_action_rate_cost": cost,
+      "amp_action_rate_weight": self.action_rate_weight,
+    }
 
   def current_lerp(self) -> float:
     """Task-reward weight of the combined reward at the current iteration."""
@@ -190,6 +258,8 @@ class AmpPPO(PPO):
       for group in self.optimizer.param_groups:
         group["lr"] = learning_rate
     loss_dict["amp_task_lerp"] = self.current_lerp()
+    if self.adaptive_action_rate:
+      loss_dict.update(self._update_action_rate_weight())
     self._iteration += 1
     if self.style_enabled and self._policy_s:
       loss_dict.update(self._update_discriminator())

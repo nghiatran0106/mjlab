@@ -27,6 +27,14 @@
 #               reward, but its actions were smoother than the expert's and its
 #               tracking error fell slowly; -0.03 keeps the penalty-to-task ratio
 #               of the hand-written reward.
+#   - bcrsl:    bcrs1 with the penalty weight learned as a Lagrange multiplier
+#               (starts at 0.1, i.e. bcrs1) so that the per-step action change of
+#               the policy mean matches the expert's (1.18 = action_rate_l2 of the
+#               expert in evaluation, -0.1178 at weight -0.1).
+#   - ft:       PPO with the hand-written reward initialized from the expert
+#               (fine-tuning); the strongest baseline when the task changes.
+# TAG overrides the name prefix of runs and output files (default phase2 or
+# variant-<name>), e.g. TAG=fair for the rerun on new seeds.
 # CONFIGS selects the configs (default "sched schedbc"). Compare
 # iterations-to-target with v7c from phase 1 (same seeds, same protocol).
 # With TIMING=1 (default) every config in TIMING_CONFIGS (default: CONFIGS) is
@@ -60,6 +68,7 @@ if [[ -n "$variant" ]]; then
 else
   suffix="" tag="phase2" reference=()
 fi
+tag="${TAG:-$tag}"
 
 export MUJOCO_GL="${MUJOCO_GL:-egl}" PYTHONUNBUFFERED=1 OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MJLAB_INIT_STD=1.0 MJLAB_ENTROPY_COEF=0.0 MJLAB_AMP_LOSS=gail
@@ -108,7 +117,7 @@ smooth=(MJLAB_AMP_ACTION_RATE=-0.3333)  # x 0.3 (task weight) = -0.1
 
 config_task() {  # config_task <config>
   case "$1" in
-    ppo) echo "Mjlab-Velocity-Flat-Unitree-G1-ExpertStep$suffix" ;;
+    ppo | ft) echo "Mjlab-Velocity-Flat-Unitree-G1-ExpertStep$suffix" ;;
     *) echo "Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond$suffix" ;;
   esac
 }
@@ -125,6 +134,9 @@ config_env() {  # config_env <config> -> sets the array "extra"
       MJLAB_INIT_STD=0.3) ;;
     bcrs2) extra=("${common[@]}" "${cloning[@]}" MJLAB_AMP_ACTION_RATE=-0.2
       MJLAB_INIT_STD=0.3) ;;
+    bcrsl) extra=("${common[@]}" "${cloning[@]}" MJLAB_INIT_STD=0.3
+      MJLAB_AMP_ACTION_RATE_TARGET="${ACTION_RATE_TARGET:-1.18}") ;;
+    ft) extra=(MJLAB_INIT_CHECKPOINT="$expert") ;;
     bcrsw) extra=("${common[@]}" "${cloning[@]}" "${smooth[@]}" MJLAB_INIT_STD=0.3
       MJLAB_AMP_CRITIC_WARMUP=25) ;;
     bctask) extra=("${common[@]}" "${cloning[@]}" MJLAB_AMP_STYLE_WEIGHT=0) ;;

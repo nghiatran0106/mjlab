@@ -39,6 +39,29 @@ class TaskOnlyOnPolicyRunner(VelocityOnPolicyRunner):
     super().__init__(env, train_cfg, log_dir, device)
 
 
+class FineTuneOnPolicyRunner(VelocityOnPolicyRunner):
+  """Plain PPO runner that can start from the weights of another checkpoint.
+
+  ``MJLAB_INIT_CHECKPOINT`` names a checkpoint whose actor and critic (with their
+  observation normalizers) initialize the networks. The iteration counter and
+  the optimizer state are not loaded, so checkpoints are numbered from 0 as in
+  a run from scratch. Without the variable the runner is the stock one.
+  """
+
+  def __init__(
+    self,
+    env: VecEnv,
+    train_cfg: dict,
+    log_dir: str | None = None,
+    device: str = "cpu",
+  ) -> None:
+    super().__init__(env, train_cfg, log_dir, device)
+    path = os.environ.get("MJLAB_INIT_CHECKPOINT", "")
+    if path:
+      self.load(path, load_cfg={"actor": True, "critic": True}, map_location=device)
+      print(f"[INFO] Initialized actor and critic from {path}")
+
+
 class AmpOnPolicyRunner(VelocityOnPolicyRunner):
   """Velocity runner that swaps PPO for :class:`AmpPPO`.
 
@@ -57,6 +80,10 @@ class AmpOnPolicyRunner(VelocityOnPolicyRunner):
     schedule for the task-reward weight (see ``AmpCfg.lerp_start``).
   - ``MJLAB_AMP_BC_FILE``, ``MJLAB_AMP_BC_STEPS``: behavior-cloning pretraining.
   - ``MJLAB_AMP_CRITIC_WARMUP``: iterations that update only the critic.
+  - ``MJLAB_AMP_ACTION_RATE_TARGET``: if set, the action-rate penalty weight is
+    a Lagrange multiplier adapted toward this per-step ``||a_t - a_{t-1}||^2``
+    of the policy mean (see ``AmpCfg.action_rate_target``); with
+    ``MJLAB_AMP_ACTION_RATE_INIT``, ``_LR`` and ``_MAX``.
 
   The exploration overrides of :func:`apply_exploration_overrides` also apply.
   """
@@ -83,6 +110,10 @@ class AmpOnPolicyRunner(VelocityOnPolicyRunner):
       "bc_file": os.environ.get("MJLAB_AMP_BC_FILE", ""),
       "bc_steps": int(os.environ.get("MJLAB_AMP_BC_STEPS", "2000")),
       "critic_warmup_iters": int(os.environ.get("MJLAB_AMP_CRITIC_WARMUP", "0")),
+      "action_rate_target": float(os.environ.get("MJLAB_AMP_ACTION_RATE_TARGET", "-1")),
+      "action_rate_init": float(os.environ.get("MJLAB_AMP_ACTION_RATE_INIT", "0.1")),
+      "action_rate_lr": float(os.environ.get("MJLAB_AMP_ACTION_RATE_LR", "0.01")),
+      "action_rate_max": float(os.environ.get("MJLAB_AMP_ACTION_RATE_MAX", "1.0")),
       "step_dt": env.unwrapped.step_dt,  # type: ignore[attr-defined]
     }
     print(f"[INFO] AMP config: {amp_cfg}")

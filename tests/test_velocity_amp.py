@@ -9,7 +9,7 @@ from mjlab.tasks.velocity_amp.config.g1.env_cfgs import (
   unitree_g1_flat_expert_gait_env_cfg,
 )
 from mjlab.tasks.velocity_amp.mdp import amp_observation_group
-from mjlab.tasks.velocity_amp.rl.amp_ppo import scheduled_lerp
+from mjlab.tasks.velocity_amp.rl.amp_ppo import AmpCfg, AmpPPO, scheduled_lerp
 from mjlab.tasks.velocity_amp.rl.discriminator import (
   Discriminator,
   ExpertBuffer,
@@ -145,3 +145,16 @@ def test_task_reward_lerp_schedule():
   # No schedule: the end value (or the additive reward, -1) is used as is.
   assert scheduled_lerp(100, -1.0, 0.3, 250, 500) == 0.3
   assert scheduled_lerp(100, 0.9, -1.0, 250, 500) == -1.0
+
+
+def test_action_rate_multiplier_moves_toward_target():
+  # The penalty weight rises while the policy is jerkier than the expert, falls
+  # when it is smoother, and stays within [0, max].
+  alg = AmpPPO.__new__(AmpPPO)
+  alg.amp_cfg = AmpCfg(action_rate_target=1.0, action_rate_lr=0.1, action_rate_max=0.25)
+  alg.action_rate_weight = 0.1
+  for cost, expected in [(2.0, 0.2), (3.0, 0.25), (0.0, 0.15), (-5.0, 0.0)]:
+    alg._mean_cost_sum, alg._mean_cost_count = cost, 1
+    stats = alg._update_action_rate_weight()
+    assert alg.action_rate_weight == pytest.approx(expected)
+    assert stats["amp_action_rate_cost"] == pytest.approx(cost)

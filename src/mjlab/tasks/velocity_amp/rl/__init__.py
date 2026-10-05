@@ -4,5 +4,8 @@ from mjlab.tasks.velocity_amp.rl.runner import (
   AmpOnPolicyRunner as AmpOnPolicyRunner,
 )
 from mjlab.tasks.velocity_amp.rl.runner import (
+  FineTuneOnPolicyRunner as FineTuneOnPolicyRunner,
+)
+from mjlab.tasks.velocity_amp.rl.runner import (
   TaskOnlyOnPolicyRunner as TaskOnlyOnPolicyRunner,
 )

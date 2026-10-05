@@ -3,7 +3,11 @@ from dataclasses import replace
 from mjlab.tasks.registry import register_mjlab_task
 from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
-from mjlab.tasks.velocity_amp.rl import AmpOnPolicyRunner, TaskOnlyOnPolicyRunner
+from mjlab.tasks.velocity_amp.rl import (
+  AmpOnPolicyRunner,
+  FineTuneOnPolicyRunner,
+  TaskOnlyOnPolicyRunner,
+)
 
 from .env_cfgs import (
   VARIANTS,
@@ -81,7 +85,7 @@ register_mjlab_task(
   rl_cfg=replace(
     unitree_g1_ppo_runner_cfg(), experiment_name="g1_velocity_expert_step"
   ),
-  runner_cls=VelocityOnPolicyRunner,
+  runner_cls=FineTuneOnPolicyRunner,
 )
 
 # Lite gait features: foot height, 5-frame window, no contact flags.
@@ -132,7 +136,7 @@ for _variant in VARIANTS:
     rl_cfg=replace(
       unitree_g1_ppo_runner_cfg(), experiment_name=f"g1_velocity_{_variant}_ppo"
     ),
-    runner_cls=VelocityOnPolicyRunner,
+    runner_cls=FineTuneOnPolicyRunner,
   )
   register_mjlab_task(
     task_id=f"Mjlab-Velocity-Flat-Unitree-G1-AMP-Cond-{_suffix}",
